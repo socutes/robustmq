@@ -28,6 +28,9 @@ pub enum JournalClientError {
     #[error("{0}")]
     BroadcastSendErrorBool(#[from] tokio::sync::broadcast::error::SendError<bool>),
 
+    #[error("{0}")]
+    MpscSendErrorBool(#[from] tokio::sync::mpsc::error::SendError<bool>),
+
     #[error("Node {0} has no available access address, may be cache data inconsistency, ready to trigger update node cache.")]
     NodeNoAvailableAddr(u64),
 
@@ -58,6 +61,15 @@ pub enum JournalClientError {
     #[error("Request {0}, received return packet does not contain body information and is an invalid packet")]
     ReceivedPacketNotContainBody(String),
 
-    #[error("Shard {0} has no active segments")]
-    NotActiveSegmentLeader(String),
+    #[error("{0} has no Leader available")]
+    NotLeader(String),
+
+    #[error("Shard {0} has no active segment")]
+    NotActiveSegment(String),
+
+    #[error("Shard {0} metadata no exists")]
+    NotShardMetadata(String),
+
+    #[error("The write request returns empty")]
+    WriteReqReturnTmpty,
 }

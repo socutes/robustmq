@@ -45,7 +45,7 @@ impl TopicStorage {
             topic_name: topic.topic_name.clone(),
             content: topic.encode(),
         };
-        placement_create_topic(self.client_pool.clone(), &config.placement_center, request).await?;
+        placement_create_topic(&self.client_pool, &config.placement_center, request).await?;
         Ok(())
     }
 
@@ -55,19 +55,18 @@ impl TopicStorage {
             cluster_name: config.cluster_name.clone(),
             topic_name,
         };
-        placement_delete_topic(self.client_pool.clone(), &config.placement_center, request).await?;
+        placement_delete_topic(&self.client_pool, &config.placement_center, request).await?;
         Ok(())
     }
 
-    pub async fn topic_list(&self) -> Result<DashMap<String, MqttTopic>, MqttBrokerError> {
+    pub async fn all(&self) -> Result<DashMap<String, MqttTopic>, MqttBrokerError> {
         let config = broker_mqtt_conf();
         let request = ListTopicRequest {
             cluster_name: config.cluster_name.clone(),
             topic_name: "".to_string(),
         };
         let reply =
-            placement_list_topic(self.client_pool.clone(), &config.placement_center, request)
-                .await?;
+            placement_list_topic(&self.client_pool, &config.placement_center, request).await?;
         let results = DashMap::with_capacity(2);
         for raw in reply.topics {
             let data = serde_json::from_slice::<MqttTopic>(&raw)?;
@@ -76,19 +75,15 @@ impl TopicStorage {
         Ok(results)
     }
 
-    pub async fn get_topic(
-        &self,
-        topic_name: String,
-    ) -> Result<Option<MqttTopic>, MqttBrokerError> {
+    pub async fn get_topic(&self, topic_name: &str) -> Result<Option<MqttTopic>, MqttBrokerError> {
         let config = broker_mqtt_conf();
         let request = ListTopicRequest {
             cluster_name: config.cluster_name.clone(),
-            topic_name,
+            topic_name: topic_name.to_owned(),
         };
 
         let reply =
-            placement_list_topic(self.client_pool.clone(), &config.placement_center, request)
-                .await?;
+            placement_list_topic(&self.client_pool, &config.placement_center, request).await?;
 
         if let Some(raw) = reply.topics.first() {
             return Ok(Some(serde_json::from_slice::<MqttTopic>(raw)?));
@@ -110,12 +105,8 @@ impl TopicStorage {
             retain_message: retain_message.encode(),
             retain_message_expired_at,
         };
-        placement_set_topic_retain_message(
-            self.client_pool.clone(),
-            &config.placement_center,
-            request,
-        )
-        .await?;
+        placement_set_topic_retain_message(&self.client_pool, &config.placement_center, request)
+            .await?;
         Ok(())
     }
 
@@ -127,21 +118,17 @@ impl TopicStorage {
             retain_message: Vec::new(),
             retain_message_expired_at: 0,
         };
-        placement_set_topic_retain_message(
-            self.client_pool.clone(),
-            &config.placement_center,
-            request,
-        )
-        .await?;
+        placement_set_topic_retain_message(&self.client_pool, &config.placement_center, request)
+            .await?;
         Ok(())
     }
 
     // Get the latest reserved message for the Topic dimension
     pub async fn get_retain_message(
         &self,
-        topic_name: String,
+        topic_name: &str,
     ) -> Result<Option<MqttMessage>, MqttBrokerError> {
-        if let Some(topic) = self.get_topic(topic_name.clone()).await? {
+        if let Some(topic) = self.get_topic(topic_name).await? {
             if let Some(retain_message) = topic.retain_message {
                 if retain_message.is_empty() {
                     return Ok(None);
@@ -150,8 +137,8 @@ impl TopicStorage {
                     retain_message.as_slice(),
                 )?));
             }
+            return Ok(None);
         }
-
-        Err(MqttBrokerError::TopicDoesNotExist(topic_name.clone()))
+        Err(MqttBrokerError::TopicDoesNotExist(topic_name.to_owned()))
     }
 }

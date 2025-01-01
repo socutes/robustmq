@@ -56,17 +56,17 @@ impl TimestampIndexManager {
     pub fn get_start_timestamp(
         &self,
         segment_iden: &SegmentIdentity,
-    ) -> Result<u64, JournalServerError> {
+    ) -> Result<i64, JournalServerError> {
         let key = timestamp_segment_start(segment_iden);
         if let Some(res) = rocksdb_engine_get(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
             key,
         )? {
-            return Ok(serde_json::from_slice::<u64>(&res.data)?);
+            return Ok(serde_json::from_slice::<i64>(&res.data)?);
         }
 
-        Ok(0)
+        Ok(-1)
     }
 
     pub fn save_end_timestamp(
@@ -86,17 +86,17 @@ impl TimestampIndexManager {
     pub fn get_end_timestamp(
         &self,
         segment_iden: &SegmentIdentity,
-    ) -> Result<u64, JournalServerError> {
+    ) -> Result<i64, JournalServerError> {
         let key = timestamp_segment_end(segment_iden);
         if let Some(res) = rocksdb_engine_get(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
             key,
         )? {
-            return Ok(serde_json::from_slice::<u64>(&res.data)?);
+            return Ok(serde_json::from_slice::<i64>(&res.data)?);
         }
 
-        Ok(0)
+        Ok(-1)
     }
 
     pub fn save_timestamp_offset(
@@ -119,7 +119,7 @@ impl TimestampIndexManager {
         &self,
         segment_iden: &SegmentIdentity,
         start_timestamp: u64,
-    ) -> Result<u64, JournalServerError> {
+    ) -> Result<Option<IndexData>, JournalServerError> {
         let prefix_key = timestamp_segment_time_prefix(segment_iden);
 
         let cf = if let Some(cf) = self
@@ -133,7 +133,7 @@ impl TimestampIndexManager {
             );
         };
 
-        let mut iter = self.rocksdb_engine_handler.db.raw_iterator_cf(cf);
+        let mut iter = self.rocksdb_engine_handler.db.raw_iterator_cf(&cf);
         iter.seek(prefix_key.clone());
 
         while iter.valid() {
@@ -147,22 +147,100 @@ impl TimestampIndexManager {
                     let data = serde_json::from_slice::<StorageDataWrap>(val)?;
                     let index_data = serde_json::from_slice::<IndexData>(data.data.as_ref())?;
 
-                    if index_data.offset < start_timestamp {
+                    if index_data.timestamp < start_timestamp {
+                        iter.next();
                         continue;
                     }
 
-                    return Ok(index_data.position);
+                    return Ok(Some(index_data));
                 }
             }
             iter.next();
         }
 
-        Ok(0)
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use common_base::tools::now_second;
+
+    use super::TimestampIndexManager;
+    use crate::core::test::test_build_rocksdb_sgement;
+    use crate::index::IndexData;
+
     #[test]
-    fn timestamp_index_test() {}
+    fn start_end_index_test() {
+        let (rocksdb_engine_handler, segment_iden) = test_build_rocksdb_sgement();
+
+        let time_index = TimestampIndexManager::new(rocksdb_engine_handler);
+
+        let start_timestamp = now_second();
+        let res = time_index.save_start_timestamp(&segment_iden, start_timestamp);
+        assert!(res.is_ok());
+
+        let res = time_index.get_start_timestamp(&segment_iden);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), start_timestamp as i64);
+
+        let end_timestamp = now_second();
+        let res = time_index.save_end_timestamp(&segment_iden, end_timestamp);
+        assert!(res.is_ok());
+
+        let res = time_index.get_end_timestamp(&segment_iden);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), end_timestamp as i64);
+    }
+
+    #[tokio::test]
+    async fn timestamp_index_test() {
+        let (rocksdb_engine_handler, segment_iden) = test_build_rocksdb_sgement();
+
+        let time_index = TimestampIndexManager::new(rocksdb_engine_handler);
+
+        let timestamp = now_second();
+
+        for i in 0..10 {
+            let cur_timestamp = timestamp + i * 10;
+            let index_data = IndexData {
+                offset: i,
+                timestamp: cur_timestamp,
+                position: i * 5,
+            };
+            let res = time_index.save_timestamp_offset(&segment_iden, cur_timestamp, index_data);
+            assert!(res.is_ok());
+        }
+
+        // get timestamp + 0
+        let res = time_index
+            .get_last_nearest_position_by_timestamp(&segment_iden, timestamp)
+            .await;
+
+        assert!(res.is_ok());
+        let res_op = res.unwrap();
+        assert!(res_op.is_some());
+        let data = res_op.unwrap();
+        assert_eq!(data.offset, 0);
+
+        // get timestamp + 10
+        let res = time_index
+            .get_last_nearest_position_by_timestamp(&segment_iden, timestamp + 10)
+            .await;
+        assert!(res.is_ok());
+        let res_op = res.unwrap();
+        assert!(res_op.is_some());
+        let data = res_op.unwrap();
+        assert_eq!(data.offset, 1);
+
+        // get timestamp + 50
+        let res = time_index
+            .get_last_nearest_position_by_timestamp(&segment_iden, timestamp + 50)
+            .await;
+        assert!(res.is_ok());
+        let res_op = res.unwrap();
+        assert!(res_op.is_some());
+        let data = res_op.unwrap();
+        assert_eq!(data.offset, 5);
+    }
 }

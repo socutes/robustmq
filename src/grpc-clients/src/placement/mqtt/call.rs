@@ -12,38 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use common_base::error::common::CommonError;
 use protocol::placement_center::placement_center_mqtt::{
     CreateAclReply, CreateAclRequest, CreateBlacklistReply, CreateBlacklistRequest,
     CreateSessionReply, CreateSessionRequest, CreateTopicReply, CreateTopicRequest,
     CreateUserReply, CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteBlacklistReply,
-    DeleteBlacklistRequest, DeleteSessionReply, DeleteSessionRequest, DeleteTopicReply,
-    DeleteTopicRequest, DeleteUserReply, DeleteUserRequest, GetShareSubLeaderReply,
-    GetShareSubLeaderRequest, ListAclReply, ListAclRequest, ListBlacklistReply,
-    ListBlacklistRequest, ListSessionReply, ListSessionRequest, ListTopicReply, ListTopicRequest,
-    ListUserReply, ListUserRequest, SaveLastWillMessageReply, SaveLastWillMessageRequest,
-    SetTopicRetainMessageReply, SetTopicRetainMessageRequest, UpdateSessionReply,
-    UpdateSessionRequest,
+    DeleteBlacklistRequest, DeleteExclusiveTopicReply, DeleteExclusiveTopicRequest,
+    DeleteSessionReply, DeleteSessionRequest, DeleteTopicReply, DeleteTopicRequest,
+    DeleteUserReply, DeleteUserRequest, GetShareSubLeaderReply, GetShareSubLeaderRequest,
+    ListAclReply, ListAclRequest, ListBlacklistReply, ListBlacklistRequest, ListSessionReply,
+    ListSessionRequest, ListTopicReply, ListTopicRequest, ListUserReply, ListUserRequest,
+    SaveLastWillMessageReply, SaveLastWillMessageRequest, SetExclusiveTopicReply,
+    SetExclusiveTopicRequest, SetTopicRetainMessageReply, SetTopicRetainMessageRequest,
+    UpdateSessionReply, UpdateSessionRequest,
 };
 
-use super::{MqttServiceReply, MqttServiceRequest};
-use crate::placement::{retry_placement_center_call, PlacementCenterReply, PlacementCenterRequest};
 use crate::pool::ClientPool;
 
 macro_rules! generate_mqtt_service_call {
     ($fn_name:ident, $req_ty:ty, $rep_ty:ty, $variant:ident) => {
         pub async fn $fn_name(
-            client_pool: Arc<ClientPool>,
-            addrs: &[String],
+            client_pool: &ClientPool,
+            addrs: &[impl AsRef<str>],
             request: $req_ty,
         ) -> Result<$rep_ty, CommonError> {
-            let request = PlacementCenterRequest::Mqtt(MqttServiceRequest::$variant(request));
-            match retry_placement_center_call(&client_pool, addrs, request).await? {
-                PlacementCenterReply::Mqtt(MqttServiceReply::$variant(reply)) => Ok(reply),
-                _ => unreachable!("Reply type mismatch"),
-            }
+            $crate::utils::retry_call(client_pool, addrs, request).await
         }
     };
 }
@@ -95,6 +88,18 @@ generate_mqtt_service_call!(
     SetTopicRetainMessageRequest,
     SetTopicRetainMessageReply,
     SetTopicRetainMessage
+);
+generate_mqtt_service_call!(
+    placement_set_nx_exclusive_topic,
+    SetExclusiveTopicRequest,
+    SetExclusiveTopicReply,
+    SetNxExclusiveTopic
+);
+generate_mqtt_service_call!(
+    placement_delete_exclusive_topic,
+    DeleteExclusiveTopicRequest,
+    DeleteExclusiveTopicReply,
+    DeleteExclusiveTopic
 );
 generate_mqtt_service_call!(
     placement_create_session,

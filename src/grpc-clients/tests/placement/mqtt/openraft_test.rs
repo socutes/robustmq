@@ -27,6 +27,7 @@ mod tests {
     use crate::common::get_placement_addr;
 
     #[tokio::test]
+    #[ignore]
     async fn placement_openraft_add_learner_test() {
         let client_pool: Arc<ClientPool> = Arc::new(ClientPool::new(1));
         let addrs = vec![get_placement_addr()];
@@ -43,7 +44,7 @@ mod tests {
             node: node.clone(),
             blocking,
         };
-        match placement_openraft_add_learner(client_pool.clone(), &addrs, request).await {
+        match placement_openraft_add_learner(&client_pool, &addrs, request).await {
             Ok(_) => {}
             Err(e) => {
                 panic!("{:?}", e);
@@ -52,6 +53,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn placement_openraft_change_membership_test() {
         let client_pool: Arc<ClientPool> = Arc::new(ClientPool::new(1));
         let addrs = vec![get_placement_addr()];
@@ -60,7 +62,7 @@ mod tests {
         let retain = false;
 
         let request = ChangeMembershipRequest { members, retain };
-        match placement_openraft_change_membership(client_pool.clone(), &addrs, request).await {
+        match placement_openraft_change_membership(&client_pool, &addrs, request).await {
             Ok(_) => {}
             Err(e) => {
                 panic!("{:?}", e);

@@ -22,12 +22,12 @@ pub mod sub_share_leader;
 pub mod subscribe_manager;
 pub mod subscriber;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct SubPublishParam {
     pub subscribe: Subscriber,
     pub publish: Publish,
     pub properties: Option<PublishProperties>,
-    pub create_time: Option<u128>,
+    pub create_time: u128,
     pub pkid: u16,
     pub group_id: String,
 }
@@ -37,15 +37,16 @@ impl SubPublishParam {
         subscribe: Subscriber,
         publish: Publish,
         properties: Option<PublishProperties>,
-        create_time: Option<u128>,
+        create_time: u128,
         group_id: String,
+        pkid: u16,
     ) -> Self {
         SubPublishParam {
             subscribe,
             publish,
             properties,
             create_time,
-            pkid: 0,
+            pkid,
             group_id,
         }
     }

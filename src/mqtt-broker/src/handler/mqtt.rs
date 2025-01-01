@@ -32,6 +32,7 @@ use storage_adapter::storage::StorageAdapter;
 use super::connection::disconnect_connection;
 use super::flow_control::is_flow_control;
 use super::message::build_message_expire;
+use super::retain::try_send_retain_message;
 use crate::handler::cache::{
     CacheManager, ConnectionLiveTime, QosAckPackageData, QosAckPackageType,
 };
@@ -47,7 +48,7 @@ use crate::handler::response::{
     response_packet_mqtt_pubrel_success, response_packet_mqtt_suback,
     response_packet_mqtt_unsuback,
 };
-use crate::handler::retain::save_topic_retain_message;
+use crate::handler::retain::save_retain_message;
 use crate::handler::session::{build_session, save_session};
 use crate::handler::topic::{get_topic_name, try_init_topic};
 use crate::handler::validator::{
@@ -393,7 +394,7 @@ where
         let client_id = connection.client_id.clone();
 
         // Persisting retain message data
-        match save_topic_retain_message(
+        match save_retain_message(
             &self.cache_manager,
             &self.client_pool,
             topic_name.clone(),
@@ -437,7 +438,7 @@ where
             MqttMessage::build_record(&client_id, &publish, &publish_properties, message_expire)
         {
             match message_storage
-                .append_topic_message(topic.topic_id.clone(), vec![record])
+                .append_topic_message(&topic.topic_id, vec![record])
                 .await
             {
                 Ok(da) => {
@@ -761,15 +762,41 @@ where
             }
         }
 
-        match pkid_save(
-            &self.cache_manager,
-            &self.client_pool,
-            &client_id,
-            subscribe.packet_identifier,
-        )
-        .await
+        // match pkid_save(
+        //     &self.cache_manager,
+        //     &self.client_pool,
+        //     &client_id,
+        //     subscribe.packet_identifier,
+        // )
+        // .await
+        // {
+        //     Ok(()) => {}
+        //     Err(e) => {
+        //         return response_packet_mqtt_suback(
+        //             &self.protocol,
+        //             &connection,
+        //             subscribe.packet_identifier,
+        //             vec![SubscribeReasonCode::Unspecified],
+        //             Some(e.to_string()),
+        //         );
+        //     }
+        // }
+
+        match self
+            .subscribe_manager
+            .save_exclusive_subscribe(subscribe.clone())
+            .await
         {
-            Ok(()) => {}
+            Ok(None) => {}
+            Ok(Some(code)) => {
+                return response_packet_mqtt_suback(
+                    &self.protocol,
+                    &connection,
+                    subscribe.packet_identifier,
+                    vec![code],
+                    None,
+                );
+            }
             Err(e) => {
                 return response_packet_mqtt_suback(
                     &self.protocol,
@@ -798,6 +825,7 @@ where
             .await;
 
         let pkid = subscribe.packet_identifier;
+
         st_report_subscribed_event(
             &self.message_storage_adapter,
             &self.cache_manager,
@@ -808,6 +836,18 @@ where
             &subscribe,
         )
         .await;
+
+        try_send_retain_message(
+            self.protocol.clone(),
+            client_id.clone(),
+            subscribe.clone(),
+            subscribe_properties.clone(),
+            self.client_pool.clone(),
+            self.cache_manager.clone(),
+            self.connection_manager.clone(),
+        )
+        .await;
+
         response_packet_mqtt_suback(&self.protocol, &connection, pkid, return_codes, None)
     }
 
@@ -858,20 +898,37 @@ where
             return packet;
         }
 
-        match pkid_delete(
-            &self.cache_manager,
-            &self.client_pool,
-            &connection.client_id,
-            un_subscribe.pkid,
-        )
-        .await
+        // match pkid_delete(
+        //     &self.cache_manager,
+        //     &self.client_pool,
+        //     &connection.client_id,
+        //     un_subscribe.pkid,
+        // )
+        // .await
+        // {
+        //     Ok(()) => {}
+        //     Err(e) => {
+        //         return response_packet_mqtt_unsuback(
+        //             &connection,
+        //             un_subscribe.pkid,
+        //             vec![UnsubAckReason::UnspecifiedError],
+        //             Some(e.to_string()),
+        //         );
+        //     }
+        // }
+
+        match self
+            .subscribe_manager
+            .remove_exclusive_subscribe(un_subscribe.clone())
+            .await
         {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(e) => {
-                return response_packet_mqtt_unsuback(
+                return response_packet_mqtt_suback(
+                    &self.protocol,
                     &connection,
                     un_subscribe.pkid,
-                    vec![UnsubAckReason::UnspecifiedError],
+                    vec![SubscribeReasonCode::Unspecified],
                     Some(e.to_string()),
                 );
             }

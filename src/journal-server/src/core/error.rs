@@ -22,9 +22,6 @@ use crate::segment::write::SegmentWriteData;
 
 #[derive(Error, Debug)]
 pub enum JournalServerError {
-    #[error("Directory {0} No rocksdb instance available")]
-    NoRocksdbInstanceAvailable(String),
-
     #[error("{0}")]
     FromUtf8Error(#[from] FromUtf8Error),
 
@@ -82,9 +79,6 @@ pub enum JournalServerError {
     #[error("Current node is not the Leader of Segment {0}")]
     NotLeader(String),
 
-    #[error("Segment file {0} already exists. We can't create Segment file again and again.")]
-    SegmentFileAlreadyExists(String),
-
     #[error("Segment file {0} does not exist, maybe it hasn't been initialized yet.")]
     SegmentFileNotExists(String),
 
@@ -96,13 +90,19 @@ pub enum JournalServerError {
 
     #[error("Segment file meta {0} does not exist, maybe it hasn't been initialized yet.")]
     SegmentFileMetaNotExists(String),
+
+    #[error("Timestamp {0} is less than the start timestamp {1} of Segment {2}, which should belong to the previous segment")]
+    TimestampBelongToPreviousSegment(u64, i64, String),
+
+    #[error("Timestamp {0} is greater than the start timestamp {1} of Segment {2}, which should belong to the next Segment")]
+    TimestampBelongToNextSegment(u64, i64, String),
+
+    #[error("Offset for timestamp {0} is not available in Segment {1}.")]
+    NotAvailableOffsetByTimestamp(u64, String),
 }
 
 pub fn get_journal_server_code(e: &JournalServerError) -> String {
     match e {
-        JournalServerError::NoRocksdbInstanceAvailable(_) => {
-            "NoRocksdbInstanceAvailable".to_string()
-        }
         JournalServerError::CommonError(_) => "CommonError".to_string(),
         JournalServerError::BroadcastBoolSendError(_) => "BroadcastBoolSendError".to_string(),
         JournalServerError::MpscSegmentWriteDataSendError(_) => {
@@ -124,13 +124,21 @@ pub fn get_journal_server_code(e: &JournalServerError) -> String {
         JournalServerError::NotFoundConnectionInCache(_) => "NotFoundConnectionInCache".to_string(),
         JournalServerError::SegmentStatusError(_, _) => "SegmentStatusError".to_string(),
         JournalServerError::NotLeader(_) => "NotLeader".to_string(),
-        JournalServerError::SegmentFileAlreadyExists(_) => "SegmentFileAlreadyExists".to_string(),
         JournalServerError::SegmentFileNotExists(_) => "SegmentFileNotExists".to_string(),
         JournalServerError::SegmentDataDirectoryNotFound(_, _) => {
             "SegmentDataDirectoryNotFound".to_string()
         }
         JournalServerError::SegmentMetaNotExists(_) => "SegmentMetaNotExists".to_string(),
         JournalServerError::SegmentFileMetaNotExists(_) => "SegmentFileMetaNotExists".to_string(),
+        JournalServerError::TimestampBelongToPreviousSegment(_, _, _) => {
+            "TimestampBelongToPreviousSegment".to_string()
+        }
+        JournalServerError::TimestampBelongToNextSegment(_, _, _) => {
+            "TimestampBelongToNextSegment".to_string()
+        }
+        JournalServerError::NotAvailableOffsetByTimestamp(_, _) => {
+            "NotAvailableOffsetByTimestamp".to_string()
+        }
     }
 }
 #[cfg(test)]

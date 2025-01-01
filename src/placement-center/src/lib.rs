@@ -17,21 +17,21 @@ use std::time::Duration;
 
 use common_base::config::placement_center::placement_center_conf;
 use grpc_clients::pool::ClientPool;
-use log::info;
+use log::{error, info};
 use openraft::Raft;
 use protocol::placement_center::placement_center_inner::placement_center_service_server::PlacementCenterServiceServer;
 use protocol::placement_center::placement_center_journal::engine_service_server::EngineServiceServer;
 use protocol::placement_center::placement_center_kv::kv_service_server::KvServiceServer;
 use protocol::placement_center::placement_center_mqtt::mqtt_service_server::MqttServiceServer;
 use protocol::placement_center::placement_center_openraft::open_raft_service_server::OpenRaftServiceServer;
+use server::grpc::service_inner::GrpcPlacementService;
 use server::grpc::service_journal::GrpcEngineService;
 use server::grpc::service_kv::GrpcKvService;
 use server::grpc::service_mqtt::GrpcMqttService;
-use server::grpc::service_placement::GrpcPlacementService;
 use server::grpc::services_openraft::GrpcOpenRaftServices;
 use storage::rocksdb::{column_family_list, storage_data_fold, RocksDBEngine};
 use tokio::signal;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast::Sender;
 use tokio::time::sleep;
 use tonic::transport::Server;
 
@@ -44,7 +44,7 @@ use crate::mqtt::cache::MqttCacheManager;
 use crate::mqtt::controller::MqttController;
 use crate::raft::raft_node::{create_raft_node, start_openraft_node};
 use crate::raft::typeconfig::TypeConfig;
-use crate::route::apply::{RaftMachineApply, RaftMessage};
+use crate::route::apply::RaftMachineApply;
 use crate::route::DataRoute;
 use crate::server::http::server::{start_http_server, HttpServerState};
 
@@ -106,10 +106,8 @@ impl PlacementCenter {
         }
     }
 
-    pub async fn start(&mut self, stop_send: broadcast::Sender<bool>) {
+    pub async fn start(&mut self, stop_send: Sender<bool>) {
         self.init_cache();
-
-        let (raft_message_send, _raft_message_recv) = mpsc::channel::<RaftMessage>(1000);
 
         let data_route = Arc::new(DataRoute::new(
             self.rocksdb_engine_handler.clone(),
@@ -117,16 +115,11 @@ impl PlacementCenter {
             self.engine_cache.clone(),
         ));
 
-        self.init_cache();
-
         self.start_call_thread();
 
         let openraft_node = create_raft_node(self.client_pool.clone(), data_route).await;
 
-        let placement_center_storage = Arc::new(RaftMachineApply::new(
-            raft_message_send,
-            openraft_node.clone(),
-        ));
+        let placement_center_storage = Arc::new(RaftMachineApply::new(openraft_node.clone()));
 
         self.start_controller(placement_center_storage.clone(), stop_send.clone());
 
@@ -136,7 +129,43 @@ impl PlacementCenter {
 
         self.start_grpc_server(placement_center_storage.clone());
 
+        self.monitoring_leader_transition(openraft_node.clone());
+
         self.awaiting_stop(stop_send).await;
+    }
+
+    pub fn monitoring_leader_transition(&self, raft: Raft<TypeConfig>) {
+        info!("Initiate Monitoring of Raft Leader Transitions");
+        let mut metrics_rx = raft.metrics();
+        tokio::spawn(async move {
+            let mut last_leader: Option<u64> = None;
+            loop {
+                match metrics_rx.changed().await {
+                    Ok(_) => {
+                        let mm = metrics_rx.borrow().clone();
+
+                        if let Some(current_leader) = mm.current_leader {
+                            if last_leader != Some(current_leader) && last_leader.is_some() {
+                                info!(
+                                    "The leader transition has occurred. The current leader is Node {}. Previous leader was Node {}.",
+                                    current_leader, last_leader.unwrap()
+                                );
+                                if mm.id == current_leader {
+                                    info!("The current node transition to the Leader, starts controller thread.");
+                                    // TODO Start the control thread
+                                }
+                            }
+                            last_leader = Some(current_leader);
+                        }
+                    }
+                    Err(changed_err) => {
+                        error!(
+                        "Error while watching metrics_rx: {}; quitting monitoring_leader_transition() loop",
+                        changed_err);
+                    }
+                }
+            }
+        });
     }
 
     // Start HTTP Server
@@ -206,7 +235,7 @@ impl PlacementCenter {
     pub fn start_controller(
         &self,
         raft_machine_apply: Arc<RaftMachineApply>,
-        stop_send: broadcast::Sender<bool>,
+        stop_send: Sender<bool>,
     ) {
         let ctrl = ClusterController::new(
             self.cluster_cache.clone(),
@@ -257,7 +286,7 @@ impl PlacementCenter {
     }
 
     // Wait Stop Signal
-    pub async fn awaiting_stop(&self, stop_send: broadcast::Sender<bool>) {
+    pub async fn awaiting_stop(&self, stop_send: Sender<bool>) {
         tokio::spawn(async move {
             sleep(Duration::from_millis(5)).await;
             info!("Placement Center service started successfully...");

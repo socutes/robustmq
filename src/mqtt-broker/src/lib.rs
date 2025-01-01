@@ -22,7 +22,7 @@ use common_base::tools::now_second;
 use grpc_clients::pool::ClientPool;
 use handler::acl::UpdateAclCache;
 use handler::cache::CacheManager;
-use handler::heartbreat::report_heartbeat;
+use handler::heartbreat::{register_node, report_heartbeat};
 use handler::keep_alive::ClientKeepAlive;
 use handler::user::UpdateUserCache;
 use lazy_static::lazy_static;
@@ -35,16 +35,15 @@ use server::http::server::{start_http_server, HttpServerState};
 use server::tcp::server::start_tcp_server;
 use server::websocket::server::{websocket_server, websockets_server, WebSocketServerState};
 use storage::cluster::ClusterStorage;
-use storage_adapter::local_rocksdb::RocksDBStorageAdapter;
 use storage_adapter::memory::MemoryStorageAdapter;
-use storage_adapter::mysql::MySQLStorageAdapter;
+// use storage_adapter::mysql::MySQLStorageAdapter;
+// use storage_adapter::rocksdb::RocksDBStorageAdapter;
 use storage_adapter::storage::StorageAdapter;
 use storage_adapter::StorageType;
 use subscribe::sub_exclusive::SubscribeExclusive;
 use subscribe::sub_share_follower::SubscribeShareFollower;
 use subscribe::sub_share_leader::SubscribeShareLeader;
 use subscribe::subscribe_manager::SubscribeManager;
-use third_driver::mysql::build_mysql_conn_pool;
 use tokio::runtime::Runtime;
 use tokio::signal;
 use tokio::sync::broadcast::{self};
@@ -55,7 +54,7 @@ lazy_static! {
 }
 
 pub mod handler;
-mod observability;
+pub mod observability;
 pub mod security;
 mod server;
 pub mod storage;
@@ -77,27 +76,27 @@ pub fn start_mqtt_broker_server(stop_send: broadcast::Sender<bool>) {
             let server = MqttBroker::new(client_pool, message_storage_adapter, metadata_cache);
             server.start(stop_send);
         }
-        StorageType::Mysql => {
-            if conf.storage.mysql_addr.is_empty() {
-                panic!("storaget type is [mysql],[storage.mysql_addr] cannot be empty");
-            }
-            let pool = build_mysql_conn_pool(&conf.storage.mysql_addr).unwrap();
-            let message_storage_adapter = Arc::new(MySQLStorageAdapter::new(pool.clone()));
-            let server: MqttBroker<MySQLStorageAdapter> =
-                MqttBroker::new(client_pool, message_storage_adapter, metadata_cache);
-            server.start(stop_send);
-        }
-        StorageType::RocksDB => {
-            if conf.storage.rocksdb_data_path.is_empty() {
-                panic!("storaget type is [rocksdb],[storage.rocksdb_path] cannot be empty");
-            }
-            let message_storage_adapter = Arc::new(RocksDBStorageAdapter::new(
-                conf.storage.rocksdb_data_path.as_str(),
-                conf.storage.rocksdb_max_open_files.unwrap_or(10000),
-            ));
-            let server = MqttBroker::new(client_pool, message_storage_adapter, metadata_cache);
-            server.start(stop_send);
-        }
+        // StorageType::Mysql => {
+        //     if conf.storage.mysql_addr.is_empty() {
+        //         panic!("storaget type is [mysql],[storage.mysql_addr] cannot be empty");
+        //     }
+        //     let pool = build_mysql_conn_pool(&conf.storage.mysql_addr).unwrap();
+        //     let message_storage_adapter = Arc::new(MySQLStorageAdapter::new(pool.clone()));
+        //     let server: MqttBroker<MySQLStorageAdapter> =
+        //         MqttBroker::new(client_pool, message_storage_adapter, metadata_cache);
+        //     server.start(stop_send);
+        // }
+        // StorageType::RocksDB => {
+        //     if conf.storage.rocksdb_data_path.is_empty() {
+        //         panic!("storaget type is [rocksdb],[storage.rocksdb_path] cannot be empty");
+        //     }
+        //     let message_storage_adapter = Arc::new(RocksDBStorageAdapter::new(
+        //         conf.storage.rocksdb_data_path.as_str(),
+        //         conf.storage.rocksdb_max_open_files.unwrap_or(10000),
+        //     ));
+        //     let server = MqttBroker::new(client_pool, message_storage_adapter, metadata_cache);
+        //     server.start(stop_send);
+        // }
         _ => {
             panic!("Message data storage type configuration error, optional :mysql, memory");
         }
@@ -262,7 +261,6 @@ where
             self.cache_manager.clone(),
             self.subscribe_manager.clone(),
             self.connection_manager.clone(),
-            self.client_pool.clone(),
         );
 
         self.runtime.spawn(async move {
@@ -274,7 +272,6 @@ where
             self.message_storage_adapter.clone(),
             self.connection_manager.clone(),
             self.cache_manager.clone(),
-            self.client_pool.clone(),
         );
 
         self.runtime.spawn(async move {
@@ -371,14 +368,13 @@ where
             metadata_cache.init_system_user().await;
             metadata_cache.load_metadata_cache(auth_driver).await;
 
-            let cluster_storage = ClusterStorage::new(client_pool.clone());
             let config = broker_mqtt_conf();
-            match cluster_storage.register_node(config).await {
-                Ok(_) => {
+            match register_node(client_pool.clone()).await {
+                Ok(()) => {
                     info!("Node {} has been successfully registered", config.broker_id);
                 }
                 Err(e) => {
-                    panic!("{}", e.to_string());
+                    panic!("{}", e);
                 }
             }
         });

@@ -18,14 +18,19 @@ use std::time::Duration;
 use axum::extract::ws::Message;
 use bytes::BytesMut;
 use common_base::config::broker_mqtt::broker_mqtt_conf;
+use common_base::error::common::CommonError;
 use common_base::tools::now_mills;
-use grpc_clients::placement::mqtt::call::placement_get_share_sub_leader;
+use grpc_clients::placement::mqtt::call::{
+    placement_delete_exclusive_topic, placement_get_share_sub_leader,
+    placement_set_nx_exclusive_topic,
+};
 use grpc_clients::pool::ClientPool;
 use log::error;
 use protocol::mqtt::codec::{MqttCodec, MqttPacketWrapper};
 use protocol::mqtt::common::{MqttPacket, MqttProtocol, PubRel, QoS};
 use protocol::placement_center::placement_center_mqtt::{
-    GetShareSubLeaderReply, GetShareSubLeaderRequest,
+    DeleteExclusiveTopicReply, DeleteExclusiveTopicRequest, GetShareSubLeaderReply,
+    GetShareSubLeaderRequest, SetExclusiveTopicReply, SetExclusiveTopicRequest,
 };
 use regex::Regex;
 use storage_adapter::storage::StorageAdapter;
@@ -42,6 +47,8 @@ use crate::server::packet::ResponsePackage;
 use crate::storage::message::MessageStorage;
 
 const SHARE_SUB_PREFIX: &str = "$share";
+
+const QUEUE_SUB_PREFIX: &str = "$queue";
 
 pub fn path_contain_sub(_: &str) -> bool {
     true
@@ -105,12 +112,12 @@ pub fn min_qos(qos: QoS, sub_qos: QoS) -> QoS {
 }
 
 pub async fn get_sub_topic_id_list(
-    metadata_cache: Arc<CacheManager>,
-    sub_path: String,
+    metadata_cache: &Arc<CacheManager>,
+    sub_path: &str,
 ) -> Vec<String> {
     let mut result = Vec::new();
     for (topic_id, topic_name) in metadata_cache.topic_id_name.clone() {
-        if path_regex_match(topic_name.clone(), sub_path.clone()) {
+        if path_regex_match(topic_name.clone(), sub_path.to_string()) {
             result.push(topic_id);
         }
     }
@@ -121,6 +128,10 @@ pub fn is_share_sub(sub_name: String) -> bool {
     sub_name.starts_with(SHARE_SUB_PREFIX)
 }
 
+pub fn is_queue_sub(sub_name: String) -> bool {
+    sub_name.starts_with(QUEUE_SUB_PREFIX)
+}
+
 pub fn decode_share_info(sub_name: String) -> (String, String) {
     let mut str_slice: Vec<&str> = sub_name.split("/").collect();
     str_slice.remove(0);
@@ -129,16 +140,54 @@ pub fn decode_share_info(sub_name: String) -> (String, String) {
     (group_name, sub_name)
 }
 
+pub fn decode_queue_info(sub_name: String) -> String {
+    let mut str_slice: Vec<&str> = sub_name.split("/").collect();
+    str_slice.remove(0);
+    format!("/{}", str_slice.join("/"))
+}
+
 pub async fn get_share_sub_leader(
     client_pool: Arc<ClientPool>,
     group_name: String,
-) -> Result<GetShareSubLeaderReply, MqttBrokerError> {
+) -> Result<GetShareSubLeaderReply, CommonError> {
     let conf = broker_mqtt_conf();
     let req = GetShareSubLeaderRequest {
         cluster_name: conf.cluster_name.clone(),
         group_name,
     };
-    Ok(placement_get_share_sub_leader(client_pool, &conf.placement_center, req).await?)
+    match placement_get_share_sub_leader(&client_pool, &conf.placement_center, req).await {
+        Ok(reply) => Ok(reply),
+        Err(e) => Err(e),
+    }
+}
+pub async fn set_nx_exclusive_topic(
+    client_pool: Arc<ClientPool>,
+    topic_name: String,
+) -> Result<SetExclusiveTopicReply, CommonError> {
+    let conf = broker_mqtt_conf();
+    let req = SetExclusiveTopicRequest {
+        cluster_name: conf.cluster_name.clone(),
+        topic_name,
+    };
+    match placement_set_nx_exclusive_topic(&client_pool, &conf.placement_center, req).await {
+        Ok(reply) => Ok(reply),
+        Err(e) => Err(e),
+    }
+}
+
+pub async fn delete_exclusive_topic(
+    client_pool: Arc<ClientPool>,
+    topic_name: String,
+) -> Result<DeleteExclusiveTopicReply, CommonError> {
+    let conf = broker_mqtt_conf();
+    let req = DeleteExclusiveTopicRequest {
+        cluster_name: conf.cluster_name.clone(),
+        topic_name,
+    };
+    match placement_delete_exclusive_topic(&client_pool, &conf.placement_center, req).await {
+        Ok(reply) => Ok(reply),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn wait_packet_ack(sx: &Sender<QosAckPackageData>) -> Option<QosAckPackageData> {
@@ -156,6 +205,7 @@ pub async fn publish_message_to_client(
     resp: ResponsePackage,
     sub_pub_param: &SubPublishParam,
     connection_manager: &Arc<ConnectionManager>,
+    metadata_cache: &Arc<CacheManager>,
 ) -> Result<(), MqttBrokerError> {
     if let Some(protocol) = connection_manager.get_connect_protocol(resp.connection_id) {
         let response: MqttPacketWrapper = MqttPacketWrapper {
@@ -180,16 +230,15 @@ pub async fn publish_message_to_client(
                 .write_tcp_frame(resp.connection_id, response)
                 .await?
         }
-
         // record slow sub data
-        if let Some(ct) = sub_pub_param.create_time {
+        if metadata_cache.get_slow_sub_config().enable && sub_pub_param.create_time > 0 {
             let slow_data = SlowSubData::build(
                 sub_pub_param.subscribe.sub_path.clone(),
                 sub_pub_param.subscribe.client_id.clone(),
                 sub_pub_param.subscribe.topic_name.clone(),
-                now_mills() - ct,
+                (now_mills() - sub_pub_param.create_time) as u64,
             );
-            record_slow_sub_data(slow_data)?;
+            record_slow_sub_data(slow_data, metadata_cache.get_slow_sub_config().whole_ms)?;
         }
     }
 
@@ -255,6 +304,7 @@ pub async fn qos2_send_publish(
                 resp.clone(),
                 sub_pub_param,
                 connection_manager,
+                metadata_cache
             ) =>{
                 match val{
                     Ok(_) => {
@@ -314,6 +364,7 @@ pub async fn qos2_send_pubrel(
                 pubrel_resp.clone(),
                 sub_pub_param,
                 connection_manager,
+                metadata_cache
             ) =>{
                 match val{
                     Ok(_) => {
@@ -336,13 +387,13 @@ pub async fn loop_commit_offset<S>(
     message_storage: &MessageStorage<S>,
     topic_id: &str,
     group_id: &str,
-    offset: u128,
+    offset: u64,
 ) where
     S: StorageAdapter + Sync + Send + 'static + Clone,
 {
     loop {
         match message_storage
-            .commit_group_offset(topic_id.to_owned(), group_id.to_owned(), offset)
+            .commit_group_offset(group_id, topic_id, offset)
             .await
         {
             Ok(_) => {
@@ -409,7 +460,14 @@ pub async fn publish_message_qos0(
     };
 
     // 2. publish to mqtt client
-    match publish_message_to_client(resp.clone(), sub_pub_param, connection_manager).await {
+    match publish_message_to_client(
+        resp.clone(),
+        sub_pub_param,
+        connection_manager,
+        metadata_cache,
+    )
+    .await
+    {
         Ok(_) => {}
         Err(e) => {
             error!(
@@ -553,7 +611,7 @@ mod tests {
         metadata_cache.add_topic(&topic_name, &topic);
 
         let sub_path = "/test/topic".to_string();
-        let result = get_sub_topic_id_list(metadata_cache.clone(), sub_path).await;
+        let result = get_sub_topic_id_list(&metadata_cache, &sub_path).await;
         assert!(result.len() == 1);
         assert_eq!(result.first().unwrap().clone(), topic.topic_id);
     }

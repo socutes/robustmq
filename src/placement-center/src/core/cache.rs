@@ -21,20 +21,20 @@ use metadata_struct::placement::node::BrokerNode;
 use serde::{Deserialize, Serialize};
 
 use super::heartbeat::NodeHeartbeatData;
-use crate::core::cluster::ClusterMetadata;
 use crate::storage::placement::cluster::ClusterStorage;
 use crate::storage::placement::node::NodeStorage;
 use crate::storage::rocksdb::RocksDBEngine;
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct PlacementCacheManager {
-    // placement raft cluster
-    pub placement_cluster: DashMap<String, ClusterMetadata>,
+    // (cluster_name, ClusterInfo)
+    cluster_list: DashMap<String, ClusterInfo>,
 
-    // broker cluster & node
-    pub cluster_list: DashMap<String, ClusterInfo>,
-    pub node_list: DashMap<String, DashMap<u64, BrokerNode>>,
-    pub node_heartbeat: DashMap<String, NodeHeartbeatData>,
+    // (cluster_name, (node_id, BrokerNode))
+    node_list: DashMap<String, DashMap<u64, BrokerNode>>,
+
+    // (cluster_name_node_id, NodeHeartbeatData)
+    node_heartbeat: DashMap<String, NodeHeartbeatData>,
 }
 
 impl PlacementCacheManager {
@@ -43,17 +43,36 @@ impl PlacementCacheManager {
             cluster_list: DashMap::with_capacity(2),
             node_heartbeat: DashMap::with_capacity(2),
             node_list: DashMap::with_capacity(2),
-            placement_cluster: DashMap::with_capacity(2),
         };
         cache.load_cache(rocksdb_engine_handler);
         cache
     }
 
+    // Cluster
     pub fn add_broker_cluster(&self, cluster: &ClusterInfo) {
         self.cluster_list
             .insert(cluster.cluster_name.clone(), cluster.clone());
     }
 
+    pub fn get_cluster(&self, cluster_name: &str) -> Option<ClusterInfo> {
+        if let Some(cluster) = self.cluster_list.get(cluster_name) {
+            return Some(cluster.clone());
+        }
+        None
+    }
+
+    pub fn get_all_cluster(&self) -> Vec<ClusterInfo> {
+        self.cluster_list.iter().map(|row| row.clone()).collect()
+    }
+
+    pub fn get_all_cluster_name(&self) -> Vec<String> {
+        self.cluster_list
+            .iter()
+            .map(|row| row.cluster_name.clone())
+            .collect()
+    }
+
+    // Node
     pub fn add_broker_node(&self, node: BrokerNode) {
         if let Some(data) = self.node_list.get_mut(&node.cluster_name) {
             data.insert(node.node_id, node);
@@ -92,29 +111,27 @@ impl PlacementCacheManager {
     }
 
     pub fn get_broker_node_addr_by_cluster(&self, cluster_name: &str) -> Vec<String> {
-        let mut results = Vec::new();
         if let Some(data) = self.node_list.get(cluster_name) {
-            for (_, node) in data.clone() {
-                if node.cluster_name.eq(cluster_name) {
-                    results.push(node.node_inner_addr);
-                }
-            }
+            return data.iter().map(|row| row.node_inner_addr.clone()).collect();
         }
-        results
+        Vec::new()
     }
 
     pub fn get_broker_node_id_by_cluster(&self, cluster_name: &str) -> Vec<u64> {
-        let mut results = Vec::new();
         if let Some(data) = self.node_list.get(cluster_name) {
-            for (_, node) in data.clone() {
-                if node.cluster_name.eq(cluster_name) {
-                    results.push(node.node_id);
-                }
-            }
+            return data.iter().map(|row| row.node_id).collect();
         }
-        results
+        Vec::new()
     }
 
+    pub fn get_broker_node_by_cluster(&self, cluster_name: &str) -> Vec<BrokerNode> {
+        if let Some(data) = self.node_list.get(cluster_name) {
+            return data.iter().map(|row| row.clone()).collect();
+        }
+        Vec::new()
+    }
+
+    // Heartbeat
     pub fn report_broker_heart(&self, cluster_name: &str, node_id: u64) {
         let key = self.node_key(cluster_name, node_id);
         let data = NodeHeartbeatData {
@@ -152,16 +169,9 @@ impl PlacementCacheManager {
                 self.add_broker_node(bn);
             }
         }
-
-        let placement_cluster = DashMap::with_capacity(2);
-        placement_cluster.insert(self.cluster_key(), ClusterMetadata::new());
-        self.placement_cluster = placement_cluster;
     }
 
     fn node_key(&self, cluster_name: &str, node_id: u64) -> String {
         format!("{}_{}", cluster_name, node_id)
-    }
-    fn cluster_key(&self) -> String {
-        "cluster".to_string()
     }
 }

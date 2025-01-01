@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::fs::remove_dir_all;
+use std::fs::remove_file;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
@@ -101,7 +101,8 @@ impl SegmentFile {
         if !file_exists(&segment_file) {
             return Err(JournalServerError::SegmentFileNotExists(segment_file));
         }
-        Ok(remove_dir_all(segment_file)?)
+
+        Ok(remove_file(segment_file)?)
     }
 
     pub async fn write(
@@ -117,7 +118,7 @@ impl SegmentFile {
             let position = writer.stream_position().await?;
 
             let data = JournalRecord::encode_to_vec(record);
-            writer.write_u64(record.offset).await?;
+            writer.write_u64(record.offset as u64).await?;
             writer.write_u32(data.len() as u32).await?;
             writer.write_all(data.as_ref()).await?;
 
@@ -138,7 +139,8 @@ impl SegmentFile {
         &self,
         start_position: u64,
         start_offset: u64,
-        size: u64,
+        max_size: u64,
+        max_record: u64,
     ) -> Result<Vec<ReadData>, JournalServerError> {
         let segment_file = data_file_segment(&self.data_fold, self.segment_no);
         let file = File::open(segment_file).await?;
@@ -151,7 +153,7 @@ impl SegmentFile {
         let mut results = Vec::new();
         let mut already_size = 0;
         loop {
-            if already_size > size {
+            if already_size > max_size {
                 break;
             }
 
@@ -183,35 +185,29 @@ impl SegmentFile {
             already_size += buf.len() as u64;
             let record = JournalRecord::decode(buf)?;
             results.push(ReadData { position, record });
+
+            if results.len() >= max_record as usize {
+                break;
+            }
         }
 
         Ok(results)
     }
 
-    pub async fn read_by_timestamp(
+    pub async fn read_by_positions(
         &self,
-        start_position: u64,
-        timestamp: u64,
-        size: u64,
+        positions: Vec<u64>,
     ) -> Result<Vec<ReadData>, JournalServerError> {
         let segment_file = data_file_segment(&self.data_fold, self.segment_no);
         let file = File::open(segment_file).await?;
         let mut reader = tokio::io::BufReader::new(file);
 
-        reader
-            .seek(std::io::SeekFrom::Current(start_position as i64))
-            .await?;
-
         let mut results = Vec::new();
-        let mut already_size = 0;
-        loop {
-            if already_size > size {
-                break;
-            }
+
+        for position in positions {
+            reader.seek(std::io::SeekFrom::Start(position)).await?;
 
             // read offset
-            let position = reader.stream_position().await?;
-
             let _ = match reader.read_u64().await {
                 Ok(offset) => offset,
                 Err(e) => {
@@ -225,59 +221,16 @@ impl SegmentFile {
             // read len
             let len = reader.read_u32().await?;
 
-            // read body
-            let mut buf = BytesMut::with_capacity(len as usize);
-            reader.read_buf(&mut buf).await?;
-
-            let buf_len = buf.len();
-            let record = JournalRecord::decode(buf)?;
-
-            if record.create_time < timestamp {
-                reader
-                    .seek(std::io::SeekFrom::Current(buf_len as i64))
-                    .await?;
+            if len == 0 {
                 continue;
             }
 
-            already_size += buf_len as u64;
-            results.push(ReadData { position, record });
-        }
-
-        Ok(results)
-    }
-
-    pub async fn read_by_positions(
-        &self,
-        positions: Vec<u64>,
-        size: u64,
-    ) -> Result<Vec<ReadData>, JournalServerError> {
-        let segment_file = data_file_segment(&self.data_fold, self.segment_no);
-        let file = File::open(segment_file).await?;
-        let mut reader = tokio::io::BufReader::new(file);
-
-        let mut results = Vec::new();
-        let mut already_size = 0;
-
-        for position in positions {
-            if already_size > size {
-                break;
-            }
-
-            reader
-                .seek(std::io::SeekFrom::Current(position as i64))
-                .await?;
-
-            // read len
-            let len = reader.read_u32().await?;
-
             // read body
             let mut buf = BytesMut::with_capacity(len as usize);
             reader.read_buf(&mut buf).await?;
 
-            let buf_len = buf.len();
             let record = JournalRecord::decode(buf)?;
 
-            already_size += buf_len as u64;
             results.push(ReadData { position, record });
         }
 
@@ -301,40 +254,102 @@ pub fn data_file_segment(data_fold: &str, segment_no: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use common_base::config::journal_server::{
+        init_journal_server_conf_by_config, JournalServerConfig,
+    };
     use common_base::tools::{now_second, unique_id};
+    use metadata_struct::journal::segment::{JournalSegment, Replica, SegmentConfig};
     use protocol::journal_server::journal_record::JournalRecord;
 
-    use super::SegmentFile;
-    #[tokio::test]
-    async fn segment_create() {
-        let data_fold = "/tmp/jl/tests";
+    use super::{data_file_segment, data_fold_shard, open_segment_write, SegmentFile};
+    use crate::core::cache::CacheManager;
+    use crate::core::test::{test_build_data_fold, test_build_segment};
+    use crate::segment::SegmentIdentity;
 
+    #[tokio::test]
+    async fn data_fold_shard_test() {
         let namespace = unique_id();
-        let shard_name = "s1";
+        let shard_name = "s1".to_string();
+        let data_fold = "/tmp/d1".to_string();
         let segment_no = 10;
-        let segment = SegmentFile::new(
-            namespace.to_string(),
-            shard_name.to_string(),
-            segment_no,
-            data_fold.to_string(),
-        );
-        assert!(segment.try_create().await.is_ok());
-        assert!(segment.try_create().await.is_ok());
+        let fold = data_fold_shard(&namespace, &shard_name, &data_fold);
+        assert_eq!(fold, format!("{}/{}/{}", data_fold, namespace, shard_name));
+        let file = data_file_segment(&fold, segment_no);
+        assert_eq!(file, format!("{}/{}.msg", fold, segment_no));
     }
 
     #[tokio::test]
-    async fn segment_rw_test() {
-        let data_fold = "/tmp/jl/tests";
-
+    async fn open_segment_write_test() {
+        init_journal_server_conf_by_config(JournalServerConfig {
+            node_id: 1,
+            ..Default::default()
+        });
+        let cluster_name = "c1".to_string();
         let namespace = unique_id();
-        let shard_name = "s1";
+        let shard_name = "s1".to_string();
         let segment_no = 10;
+        let segment_iden = SegmentIdentity {
+            namespace: namespace.clone(),
+            shard_name: shard_name.clone(),
+            segment_seq: segment_no,
+        };
+        let segment = JournalSegment {
+            cluster_name,
+            namespace,
+            shard_name,
+            segment_seq: segment_no,
+            replicas: vec![Replica {
+                replica_seq: 0,
+                node_id: 1,
+                fold: "/tmp/jl/tests".to_string(),
+            }],
+            config: SegmentConfig {
+                max_segment_size: 1000,
+            },
+            ..Default::default()
+        };
+        let cache_manager = Arc::new(CacheManager::new());
+
+        let res = open_segment_write(&cache_manager, &segment_iden).await;
+        assert!(res.is_err());
+
+        cache_manager.set_segment(segment);
+        let res = open_segment_write(&cache_manager, &segment_iden).await;
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().1, 1000);
+    }
+
+    #[tokio::test]
+    async fn segment_create() {
+        let data_fold = test_build_data_fold();
+        let segment_iden = test_build_segment();
 
         let segment = SegmentFile::new(
-            namespace.to_string(),
-            shard_name.to_string(),
-            segment_no,
-            data_fold.to_string(),
+            segment_iden.namespace.to_string(),
+            segment_iden.shard_name.to_string(),
+            segment_iden.segment_seq,
+            data_fold.first().unwrap().to_string(),
+        );
+        assert!(segment.try_create().await.is_ok());
+        assert!(segment.try_create().await.is_ok());
+        assert!(segment.exists());
+        let res = segment.delete().await;
+        assert!(res.is_ok());
+        assert!(!segment.exists());
+    }
+
+    #[tokio::test]
+    async fn segment_read_offset_test() {
+        let data_fold = test_build_data_fold();
+        let segment_iden = test_build_segment();
+
+        let segment = SegmentFile::new(
+            segment_iden.namespace.to_string(),
+            segment_iden.shard_name.to_string(),
+            segment_iden.segment_seq,
+            data_fold.first().unwrap().to_string(),
         );
 
         segment.try_create().await.unwrap();
@@ -359,9 +374,57 @@ mod tests {
             }
         }
 
-        let res = segment.read_by_offset(0, 0, 20000).await.unwrap();
-        for raw in res {
-            println!("{:?}", raw);
+        let res = segment.read_by_offset(0, 0, 20000, 1000).await.unwrap();
+        assert_eq!(res.len(), 10);
+
+        let res = segment.read_by_offset(0, 1005, 20000, 1000).await.unwrap();
+        assert_eq!(res.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn segment_read_position_test() {
+        let data_fold = test_build_data_fold();
+        let segment_iden = test_build_segment();
+
+        let segment = SegmentFile::new(
+            segment_iden.namespace.to_string(),
+            segment_iden.shard_name.to_string(),
+            segment_iden.segment_seq,
+            data_fold.first().unwrap().to_string(),
+        );
+
+        segment.try_create().await.unwrap();
+        for i in 0..10 {
+            let value = format!("data1#-{}", i);
+            let record = JournalRecord {
+                content: value.as_bytes().to_vec(),
+                create_time: now_second(),
+                key: format!("k{}", i),
+                namespace: "n1".to_string(),
+                shard_name: "s1".to_string(),
+                offset: 1000 + i,
+                segment: 1,
+                tags: vec![],
+                ..Default::default()
+            };
+            match segment.write(&[record.clone()]).await {
+                Ok(_) => {}
+                Err(e) => {
+                    panic!("{:?}", e);
+                }
+            }
         }
+
+        let res = segment.read_by_positions(vec![0]).await.unwrap();
+        assert_eq!(res.len(), 1);
+
+        let res = segment.read_by_positions(vec![45]).await.unwrap();
+        assert_eq!(res.len(), 1);
+
+        let res = segment.read_by_positions(vec![0, 45, 90]).await.unwrap();
+        assert_eq!(res.len(), 3);
+
+        let size = segment.size().await.unwrap();
+        assert!(size > 0);
     }
 }

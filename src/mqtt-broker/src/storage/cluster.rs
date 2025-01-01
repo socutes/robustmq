@@ -17,7 +17,7 @@ use std::sync::Arc;
 use common_base::config::broker_mqtt::{broker_mqtt_conf, BrokerMqttConfig};
 use common_base::error::common::CommonError;
 use common_base::tools::get_local_ip;
-use grpc_clients::placement::placement::call::{
+use grpc_clients::placement::inner::call::{
     delete_resource_config, get_resource_config, heartbeat, node_list, register_node,
     set_resource_config, unregister_node,
 };
@@ -45,7 +45,7 @@ impl ClusterStorage {
             cluster_name: conf.cluster_name.clone(),
         };
 
-        let reply = node_list(self.client_pool.clone(), &conf.placement_center, request).await?;
+        let reply = node_list(&self.client_pool, &conf.placement_center, request).await?;
 
         let mut node_list: Vec<BrokerNode> = Vec::new();
         for node in reply.nodes {
@@ -80,12 +80,7 @@ impl ClusterStorage {
             extend_info: serde_json::to_string(&node).unwrap(),
         };
 
-        register_node(
-            self.client_pool.clone(),
-            &config.placement_center,
-            req.clone(),
-        )
-        .await?;
+        register_node(&self.client_pool, &config.placement_center, req.clone()).await?;
 
         Ok(())
     }
@@ -97,12 +92,7 @@ impl ClusterStorage {
             node_id: config.broker_id,
         };
 
-        unregister_node(
-            self.client_pool.clone(),
-            &config.placement_center,
-            req.clone(),
-        )
-        .await?;
+        unregister_node(&self.client_pool, &config.placement_center, req.clone()).await?;
         Ok(())
     }
 
@@ -114,59 +104,53 @@ impl ClusterStorage {
             node_id: config.broker_id,
         };
 
-        heartbeat(
-            self.client_pool.clone(),
-            &config.placement_center,
-            req.clone(),
-        )
-        .await?;
+        heartbeat(&self.client_pool, &config.placement_center, req.clone()).await?;
 
         Ok(())
     }
 
     pub async fn set_cluster_config(
         &self,
-        cluster_name: String,
+        cluster_name: &str,
         cluster: MqttClusterDynamicConfig,
     ) -> Result<(), CommonError> {
         let config = broker_mqtt_conf();
-        let resources = self.cluster_config_resources(cluster_name.clone());
+        let resources = self.cluster_config_resources(cluster_name.to_string());
         let request = SetResourceConfigRequest {
-            cluster_name: cluster_name.clone(),
+            cluster_name: cluster_name.to_string(),
             resources,
             config: cluster.encode(),
         };
 
-        set_resource_config(self.client_pool.clone(), &config.placement_center, request).await?;
+        set_resource_config(&self.client_pool, &config.placement_center, request).await?;
 
         Ok(())
     }
 
-    pub async fn delete_cluster_config(&self, cluster_name: String) -> Result<(), CommonError> {
+    pub async fn delete_cluster_config(&self, cluster_name: &str) -> Result<(), CommonError> {
         let config = broker_mqtt_conf();
-        let resources = self.cluster_config_resources(cluster_name.clone());
+        let resources = self.cluster_config_resources(cluster_name.to_string());
         let request = DeleteResourceConfigRequest {
-            cluster_name: cluster_name.clone(),
+            cluster_name: cluster_name.to_string(),
             resources,
         };
 
-        delete_resource_config(self.client_pool.clone(), &config.placement_center, request).await?;
+        delete_resource_config(&self.client_pool, &config.placement_center, request).await?;
         Ok(())
     }
 
     pub async fn get_cluster_config(
         &self,
-        cluster_name: String,
+        cluster_name: &str,
     ) -> Result<Option<MqttClusterDynamicConfig>, CommonError> {
         let config = broker_mqtt_conf();
-        let resources = self.cluster_config_resources(cluster_name.clone());
+        let resources = self.cluster_config_resources(cluster_name.to_string());
         let request = GetResourceConfigRequest {
-            cluster_name: cluster_name.clone(),
+            cluster_name: cluster_name.to_string(),
             resources,
         };
 
-        match get_resource_config(self.client_pool.clone(), &config.placement_center, request).await
-        {
+        match get_resource_config(&self.client_pool, &config.placement_center, request).await {
             Ok(data) => {
                 if data.config.is_empty() {
                     Ok(None)

@@ -45,6 +45,17 @@ pub fn key_resource_idempotent(cluster_name: &str, produce_id: &str, seq_num: u6
     format!("/idempotent/{}/{}/{}", cluster_name, produce_id, seq_num)
 }
 
+pub fn key_offset(cluster_name: &str, group: &str, namespace: &str, shard_name: &str) -> String {
+    format!(
+        "/offset/{}/{}/{}/{}",
+        cluster_name, group, namespace, shard_name
+    )
+}
+
+pub fn key_offset_by_group(cluster_name: &str, group: &str) -> String {
+    format!("/offset/{}/{}", cluster_name, group)
+}
+
 /** ===========Journal========== */
 pub fn key_shard(cluster_name: &str, namespace: &str, shard_name: &str) -> String {
     format!(
@@ -165,6 +176,20 @@ pub fn storage_key_mqtt_last_will_prefix(cluster_name: &str) -> String {
 
 pub fn storage_key_mqtt_node_sub_group_leader(cluster_name: &str) -> String {
     format!("/mqtt/sub_group_leader/{}", cluster_name)
+}
+
+pub fn storage_key_mqtt_exclusive_topic_name(
+    cluster_name: &str,
+    exclusive_topic_name: &str,
+) -> String {
+    format!(
+        "/mqtt/exclusive_topic/{}/{}",
+        cluster_name, exclusive_topic_name
+    )
+}
+
+pub fn storage_key_mqtt_exclusive_topic_prefix(cluster_name: &str) -> String {
+    format!("/mqtt/exclusive_topic/{}", cluster_name)
 }
 
 pub fn storage_key_mqtt_acl(

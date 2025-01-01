@@ -217,11 +217,6 @@ impl CacheManager {
         }
     }
 
-    pub fn remove_filter_by_client_id(&self, client_id: String) {
-        self.subscribe_filter.remove(&client_id);
-        self.subscribe_is_new.remove(&client_id);
-    }
-
     pub fn get_session_info(&self, client_id: &str) -> Option<MqttSession> {
         if let Some(session) = self.session_info.get(client_id) {
             return Some(session.clone());
@@ -260,17 +255,6 @@ impl CacheManager {
                 MetadataCacheAction::Del => {}
             },
         }
-    }
-
-    pub fn set_cluster_info(&self, cluster: MqttClusterDynamicConfig) {
-        self.cluster_info.insert(self.cluster_name.clone(), cluster);
-    }
-
-    pub fn get_cluster_info(&self) -> MqttClusterDynamicConfig {
-        if let Some(cluster) = self.cluster_info.get(&self.cluster_name) {
-            return cluster.clone();
-        }
-        MqttClusterDynamicConfig::new()
     }
 
     pub fn add_user(&self, user: MqttUser) {
@@ -326,8 +310,8 @@ impl CacheManager {
         self.topic_info.contains_key(topic)
     }
 
-    pub fn topic_name_by_id(&self, topic_id: String) -> Option<String> {
-        if let Some(data) = self.topic_id_name.get(&topic_id) {
+    pub fn topic_name_by_id(&self, topic_id: &str) -> Option<String> {
+        if let Some(data) = self.topic_id_name.get(topic_id) {
             return Some(data.clone());
         }
         None
@@ -462,10 +446,7 @@ impl CacheManager {
         let conf = broker_mqtt_conf();
         // load cluster config
         let cluster_storage = ClusterStorage::new(self.client_pool.clone());
-        let cluster = match cluster_storage
-            .get_cluster_config(conf.cluster_name.clone())
-            .await
-        {
+        let cluster = match cluster_storage.get_cluster_config(&conf.cluster_name).await {
             Ok(Some(cluster)) => cluster,
             Ok(None) => MqttClusterDynamicConfig::new(),
             Err(e) => {
@@ -479,7 +460,7 @@ impl CacheManager {
 
         // load all topic
         let topic_storage = TopicStorage::new(self.client_pool.clone());
-        let topic_list = match topic_storage.topic_list().await {
+        let topic_list = match topic_storage.all().await {
             Ok(list) => list,
             Err(e) => {
                 panic!("Failed to load the topic list with error message:{}", e);
@@ -576,6 +557,10 @@ impl CacheManager {
 
     pub fn add_blacklist(&self, blacklist: MqttAclBlackList) {
         self.acl_metadata.parse_mqtt_blacklist(blacklist);
+    }
+
+    pub fn remove_blacklist(&self, blacklist: MqttAclBlackList) {
+        self.acl_metadata.remove_mqtt_blacklist(blacklist);
     }
 
     pub fn remove_ack_packet(&self, client_id: &str, pkid: u16) {

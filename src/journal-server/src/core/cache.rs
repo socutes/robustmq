@@ -17,10 +17,10 @@ use std::sync::Arc;
 use common_base::config::journal_server::journal_server_conf;
 use common_base::tools::now_second;
 use dashmap::DashMap;
+use grpc_clients::placement::inner::call::node_list;
 use grpc_clients::placement::journal::call::{list_segment, list_segment_meta, list_shard};
-use grpc_clients::placement::placement::call::node_list;
 use grpc_clients::pool::ClientPool;
-use log::{debug, info};
+use log::{error, info};
 use metadata_struct::journal::segment::{JournalSegment, SegmentStatus};
 use metadata_struct::journal::segment_meta::JournalSegmentMetadata;
 use metadata_struct::journal::shard::{shard_name_iden, JournalShard};
@@ -29,21 +29,36 @@ use protocol::placement_center::placement_center_inner::NodeListRequest;
 use protocol::placement_center::placement_center_journal::{
     ListSegmentMetaRequest, ListSegmentRequest, ListShardRequest,
 };
-use tokio::sync::broadcast;
 
-use super::cluster::JournalEngineClusterConfig;
+use super::cluster_config::JournalEngineClusterConfig;
+use crate::index::build::IndexBuildThreadData;
 use crate::segment::write::SegmentWrite;
 use crate::segment::SegmentIdentity;
 
 #[derive(Clone)]
 pub struct CacheManager {
+    // ("local", JournalEngineClusterConfig)
     cluster: DashMap<String, JournalEngineClusterConfig>,
+
+    // (node_id, BrokerNode)
     node_list: DashMap<u64, BrokerNode>,
+
+    // (shard_name, JournalShard)
     shards: DashMap<String, JournalShard>,
+
+    // (shard_name, (segment_no, JournalSegment))
     segments: DashMap<String, DashMap<u32, JournalSegment>>,
+
+    // (shard_name, (segment_no, JournalSegmentMetadata))
     segment_metadatas: DashMap<String, DashMap<u32, JournalSegmentMetadata>>,
+
+    // (segment_name, SegmentIdentity)
     leader_segments: DashMap<String, SegmentIdentity>,
-    segment_index_build_thread: DashMap<String, broadcast::Sender<bool>>,
+
+    // (segment_name, IndexBuildThreadData)
+    segment_index_build_thread: DashMap<String, IndexBuildThreadData>,
+
+    // (segment_name, SegmentWrite)
     segment_writes: DashMap<String, SegmentWrite>,
 }
 
@@ -69,6 +84,7 @@ impl CacheManager {
         }
     }
 
+    // Node
     pub fn add_node(&self, node: BrokerNode) {
         self.node_list.insert(node.node_id, node);
     }
@@ -91,14 +107,22 @@ impl CacheManager {
     }
 
     pub fn init_cluster(&self) {
-        let cluster = JournalEngineClusterConfig::default();
-        self.cluster.insert("local".to_string(), cluster);
+        self.cluster
+            .insert("local".to_string(), JournalEngineClusterConfig::new());
     }
 
     pub fn update_local_cache_time(&self, time: u64) {
         if let Some(mut cluster) = self.cluster.get_mut("local") {
             cluster.last_update_local_cache_time = time;
         }
+    }
+
+    pub fn is_allow_update_local_cache(&self) -> bool {
+        if (now_second() - self.get_cluster().last_update_local_cache_time) > 3 {
+            return true;
+        }
+
+        false
     }
 
     // Shard
@@ -116,10 +140,7 @@ impl CacheManager {
     }
 
     pub fn delete_shard(&self, namespace: &str, shard_name: &str) {
-        let key = shard_name_iden(namespace, shard_name);
-        self.shards.remove(&key);
-        self.segments.remove(&key);
-        self.segment_metadatas.remove(&key);
+        self.shards.remove(&shard_name_iden(namespace, shard_name));
     }
 
     pub fn get_shards(&self) -> Vec<JournalShard> {
@@ -128,11 +149,6 @@ impl CacheManager {
             results.push(raw.value().clone());
         }
         results
-    }
-
-    pub fn is_exist_shard(&self, namespace: &str, shard_name: &str) -> bool {
-        let key = shard_name_iden(namespace, shard_name);
-        self.shards.contains_key(&key) || self.segments.contains_key(&key)
     }
 
     pub fn get_active_segment(&self, namespace: &str, shard_name: &str) -> Option<JournalSegment> {
@@ -175,26 +191,31 @@ impl CacheManager {
     }
 
     pub fn delete_segment(&self, segment: &SegmentIdentity) {
+        // delete segment
         let key = shard_name_iden(&segment.namespace, &segment.shard_name);
         if let Some(list) = self.segments.get(&key) {
             list.remove(&segment.segment_seq);
         }
 
+        // delete segment_metadatas
         if let Some(list) = self.segment_metadatas.get(&key) {
             list.remove(&segment.segment_seq);
         }
 
+        // delete leader segment
         self.remove_leader_segment(segment);
 
-        if let Some(stop_send) = self.segment_index_build_thread.get(&key) {
-            if let Err(e) = stop_send.send(true) {
-                debug!("Trying to stop the index building thread for segment {} failed with error message:{}", segment.name(),e);
+        // delete index build thread by segment
+        if let Some(data) = self.segment_index_build_thread.get(&key) {
+            if let Err(e) = data.stop_send.send(true) {
+                error!("Trying to stop the index building thread for segment {} failed with error message:{}", segment.name(),e);
             }
         }
 
+        // delete write thread by segment
         if let Some(write) = self.segment_writes.get(&key) {
             if let Err(e) = write.stop_sender.send(true) {
-                debug!("Trying to stop the segment write thread for segment {} failed with error message:{}", segment.name(),e);
+                error!("Trying to stop the segment write thread for segment {} failed with error message:{}", segment.name(),e);
             }
         }
     }
@@ -246,13 +267,6 @@ impl CacheManager {
         }
     }
 
-    pub fn delete_segment_meta(&self, segment: &JournalSegment) {
-        let key = shard_name_iden(&segment.namespace, &segment.shard_name);
-        if let Some(list) = self.segment_metadatas.get(&key) {
-            list.remove(&segment.segment_seq);
-        }
-    }
-
     pub fn get_segment_meta(
         &self,
         segment_iden: &SegmentIdentity,
@@ -270,15 +284,14 @@ impl CacheManager {
     pub fn add_build_index_thread(
         &self,
         segment_iden: &SegmentIdentity,
-        stop_send: broadcast::Sender<bool>,
+        index_build_thread_data: IndexBuildThreadData,
     ) {
         self.segment_index_build_thread
-            .insert(segment_iden.name(), stop_send);
+            .insert(segment_iden.name(), index_build_thread_data);
     }
 
     pub fn remove_build_index_thread(&self, segment_iden: &SegmentIdentity) {
-        let key = segment_iden.name();
-        self.segment_index_build_thread.remove(&key);
+        self.segment_index_build_thread.remove(&segment_iden.name());
     }
 
     pub fn contain_build_index_thread(&self, segment_iden: &SegmentIdentity) -> bool {
@@ -324,16 +337,6 @@ impl CacheManager {
     fn remove_leader_segment(&self, segment_iden: &SegmentIdentity) {
         self.leader_segments.remove(&segment_iden.name());
     }
-
-    // Local cache
-    pub fn is_allow_update_local_cache(&self) -> bool {
-        if let Some(cluster) = self.cluster.get("local") {
-            if (now_second() - cluster.last_update_local_cache_time) > 3 {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 pub async fn load_metadata_cache(cache_manager: &Arc<CacheManager>, client_pool: &Arc<ClientPool>) {
@@ -347,7 +350,7 @@ pub async fn load_metadata_cache(cache_manager: &Arc<CacheManager>, client_pool:
     let request = NodeListRequest {
         cluster_name: conf.cluster_name.clone(),
     };
-    match node_list(client_pool.clone(), &conf.placement_center, request).await {
+    match node_list(client_pool, &conf.placement_center, request).await {
         Ok(list) => {
             info!(
                 "Load the node cache, the number of nodes is {}",
@@ -376,7 +379,7 @@ pub async fn load_metadata_cache(cache_manager: &Arc<CacheManager>, client_pool:
         cluster_name: conf.cluster_name.clone(),
         ..Default::default()
     };
-    match list_shard(client_pool.clone(), &conf.placement_center, request).await {
+    match list_shard(client_pool, &conf.placement_center, request).await {
         Ok(list) => match serde_json::from_slice::<Vec<JournalShard>>(&list.shards) {
             Ok(data) => {
                 info!(
@@ -405,7 +408,7 @@ pub async fn load_metadata_cache(cache_manager: &Arc<CacheManager>, client_pool:
         segment_no: -1,
         ..Default::default()
     };
-    match list_segment(client_pool.clone(), &conf.placement_center, request).await {
+    match list_segment(client_pool, &conf.placement_center, request).await {
         Ok(list) => match serde_json::from_slice::<Vec<JournalSegment>>(&list.segments) {
             Ok(data) => {
                 info!(
@@ -433,7 +436,7 @@ pub async fn load_metadata_cache(cache_manager: &Arc<CacheManager>, client_pool:
         segment_no: -1,
         ..Default::default()
     };
-    match list_segment_meta(client_pool.clone(), &conf.placement_center, request).await {
+    match list_segment_meta(client_pool, &conf.placement_center, request).await {
         Ok(list) => match serde_json::from_slice::<Vec<JournalSegmentMetadata>>(&list.segments) {
             Ok(data) => {
                 info!(

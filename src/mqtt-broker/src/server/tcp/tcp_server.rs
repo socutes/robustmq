@@ -35,6 +35,19 @@ use crate::server::connection::{NetworkConnection, NetworkConnectionType};
 use crate::server::connection_manager::ConnectionManager;
 use crate::server::packet::RequestPackage;
 
+/// The `acceptor_process` function is responsible for accepting incoming TCP connections
+/// in an asynchronous manner. It utilizes multiple threads to handle the incoming connections
+/// concurrently, improving the server's ability to manage a high volume of connections.
+///
+/// # Parameters
+/// - `accept_thread_num`: The number of threads to spawn for accepting connections.
+/// - `connection_manager`: An `Arc`-wrapped `ConnectionManager` instance for managing all network connections.
+/// - `stop_sx`: A `broadcast::Sender` used to send stop signals to all acceptor threads.
+/// - `listener_arc`: An `Arc`-wrapped `TcpListener` for listening to and accepting TCP connections.
+/// - `request_queue_sx`: A `Sender` for sending `RequestPackage` instances to a processing queue.
+/// - `cache_manager`: An `Arc`-wrapped `CacheManager` for managing cache operations.
+/// - `network_connection_type`: An enum indicating the type of network connection.
+///
 pub(crate) async fn acceptor_process(
     accept_thread_num: usize,
     connection_manager: Arc<ConnectionManager>,
@@ -124,7 +137,7 @@ fn read_frame_process(
                             Ok(pack) => {
                                 record_received_metrics(&connection, &pack, &network_type);
 
-                                debug!("revc tcp packet:{:?}", pack);
+                                info!("revc tcp packet:{:?}", pack);
                                 let package =
                                     RequestPackage::new(connection.connection_id, connection.addr, pack);
 

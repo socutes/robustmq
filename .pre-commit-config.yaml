@@ -29,6 +29,20 @@ repos:
     rev: 22.10.0
     hooks:
       - id: black
+# todo: we can use online github repo
+#  - repo: https://github.com/crate-ci/typos
+#    rev: v1.28.4
+#    hooks:
+#      - id: typos
+#        language: system
+#        files: \.*$
+#        pass_filenames: false
+#  - repo: https://github.com/EmbarkStudios/cargo-deny
+#    rev: 0.14.16 # choose your preferred tag
+#    hooks:
+#      - id: cargo-deny
+#        # optionally modify the arguments for cargo-deny (default arguments shown here)
+#        args: [ "--licenses", "check" ]
   - repo: local
     hooks:
       - id: cargo-fmt-auto
@@ -93,7 +107,7 @@ repos:
       - id: cargo-test
         name: cargo test
         description: unit test for the project
-        entry: bash -c 'cargo nextest run --workspace --exclude robustmq-test'
+        entry: bash -c 'make test'
         language: system
         files: \.rs$
         pass_filenames: false

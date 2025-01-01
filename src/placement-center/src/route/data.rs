@@ -46,6 +46,9 @@ pub enum StorageDataType {
     ClusterSetIdempotentData,
     ClusterDeleteIdempotentData,
 
+    ClusterSaveOffset,
+    ClusterDeleteOffset,
+
     // Journal
     JournalSetShard,
     JournalDeleteShard,
@@ -71,4 +74,6 @@ pub enum StorageDataType {
     MqttDeleteAcl,
     MqttSetBlacklist,
     MqttDeleteBlacklist,
+    MqttSetNxExclusiveTopic,
+    MqttDeleteExclusiveTopic,
 }

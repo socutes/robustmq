@@ -46,18 +46,17 @@ mod tests {
             mqtt_conf.cluster_name.clone(),
             topic_name.clone(),
         );
-        topic_storage.save_topic(topic).await.unwrap();
+        match topic_storage.save_topic(topic).await {
+            Ok(_) => {}
+            Err(e) => panic!("{}", e),
+        }
 
-        let result = topic_storage
-            .get_topic(topic_name.clone())
-            .await
-            .unwrap()
-            .unwrap();
+        let result = topic_storage.get_topic(&topic_name).await.unwrap().unwrap();
         assert!(result.retain_message.is_none());
         assert_eq!(result.topic_name, topic_name);
         assert!(!result.topic_id.is_empty());
 
-        let result = topic_storage.topic_list().await.unwrap();
+        let result = topic_storage.all().await.unwrap();
         assert!(!result.is_empty());
 
         topic_storage
@@ -65,10 +64,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = topic_storage.get_topic(topic_name.clone()).await.unwrap();
+        let result = topic_storage.get_topic(&topic_name).await.unwrap();
         assert!(result.is_none());
 
-        topic_storage.topic_list().await.unwrap();
+        topic_storage.all().await.unwrap();
     }
 
     #[tokio::test]
@@ -98,10 +97,10 @@ mod tests {
         );
         topic_storage.save_topic(topic).await.unwrap();
 
-        let result_message = topic_storage
-            .get_retain_message(topic_name.clone())
-            .await
-            .unwrap();
+        let result = topic_storage.get_topic(&topic_name).await.unwrap().unwrap();
+        println!("{:?}", result);
+
+        let result_message = topic_storage.get_retain_message(&topic_name).await.unwrap();
         assert!(result_message.is_none());
 
         let publish_properties = PublishProperties::default();
@@ -113,7 +112,7 @@ mod tests {
             .unwrap();
 
         let result_message = topic_storage
-            .get_retain_message(topic_name.clone())
+            .get_retain_message(&topic_name)
             .await
             .unwrap()
             .unwrap();
@@ -125,10 +124,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result_message = topic_storage
-            .get_retain_message(topic_name.clone())
-            .await
-            .unwrap();
+        let result_message = topic_storage.get_retain_message(&topic_name).await.unwrap();
         assert!(result_message.is_none());
     }
 }

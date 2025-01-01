@@ -18,9 +18,9 @@ use std::time::Duration;
 use common_base::config::journal_server::{journal_server_conf, JournalServerConfig};
 use common_base::error::common::CommonError;
 use common_base::tools::get_local_ip;
-use grpc_clients::placement::placement::call::{heartbeat, register_node, unregister_node};
+use grpc_clients::placement::inner::call::{heartbeat, register_node, unregister_node};
 use grpc_clients::pool::ClientPool;
-use log::{debug, error, info};
+use log::{debug, error};
 use metadata_struct::journal::node_extend::JournalNodeExtend;
 use protocol::placement_center::placement_center_inner::{
     ClusterType, HeartbeatRequest, RegisterNodeRequest, UnRegisterNodeRequest,
@@ -28,12 +28,6 @@ use protocol::placement_center::placement_center_inner::{
 use tokio::select;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
-
-#[derive(Clone, Default)]
-pub struct JournalEngineClusterConfig {
-    pub enable_auto_create_shard: bool,
-    pub last_update_local_cache_time: u64,
-}
 
 pub async fn register_journal_node(
     client_pool: Arc<ClientPool>,
@@ -54,8 +48,8 @@ pub async fn register_journal_node(
         node_inner_addr: format!("{}:{}", get_local_ip(), conf.network.grpc_port),
         extend_info: serde_json::to_string(&extend)?,
     };
-    register_node(client_pool.clone(), &config.placement_center, req.clone()).await?;
-    info!("Node {} register successfully", config.node_id);
+    register_node(&client_pool, &config.placement_center, req.clone()).await?;
+    debug!("Node {} register successfully", config.node_id);
     Ok(())
 }
 
@@ -68,8 +62,8 @@ pub async fn unregister_journal_node(
         cluster_name: config.cluster_name,
         node_id: config.node_id,
     };
-    unregister_node(client_pool.clone(), &config.placement_center, req.clone()).await?;
-    info!("Node {} exits successfully", config.node_id);
+    unregister_node(&client_pool, &config.placement_center, req.clone()).await?;
+    debug!("Node {} exits successfully", config.node_id);
     Ok(())
 }
 
@@ -85,21 +79,21 @@ pub async fn report_heartbeat(client_pool: Arc<ClientPool>, stop_send: broadcast
                     }
                 }
             }
-            _ = report(client_pool.clone()) => {
+            _ = report_report0(client_pool.clone()) => {
 
             }
         }
     }
 }
 
-async fn report(client_pool: Arc<ClientPool>) {
+async fn report_report0(client_pool: Arc<ClientPool>) {
     let config = journal_server_conf();
     let req = HeartbeatRequest {
         cluster_name: config.cluster_name.clone(),
         cluster_type: ClusterType::JournalServer.into(),
         node_id: config.node_id,
     };
-    match heartbeat(client_pool.clone(), &config.placement_center, req.clone()).await {
+    match heartbeat(&client_pool, &config.placement_center, req.clone()).await {
         Ok(_) => {
             debug!(
                 "Node {} successfully reports the heartbeat communication",
@@ -115,5 +109,28 @@ async fn report(client_pool: Arc<ClientPool>) {
             error!("{}", e);
         }
     }
+    sleep(Duration::from_secs(1)).await;
+}
+
+pub async fn report_monitor(client_pool: Arc<ClientPool>, stop_send: broadcast::Sender<bool>) {
+    loop {
+        let mut stop_recv = stop_send.subscribe();
+        select! {
+            val = stop_recv.recv() =>{
+                if let Ok(flag) = val {
+                    if flag {
+                        debug!("{}","Monitor reporting thread exited successfully");
+                        break;
+                    }
+                }
+            }
+            _ = report_monitor0(client_pool.clone()) => {
+
+            }
+        }
+    }
+}
+
+async fn report_monitor0(_client_pool: Arc<ClientPool>) {
     sleep(Duration::from_secs(1)).await;
 }
