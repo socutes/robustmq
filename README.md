@@ -190,6 +190,18 @@ Build Arm Release
 ####  MQTT functional tests
 MQTT functionality was tested through the MQTTX tool. MQTTX quick start: https://mqttx.app/zh/docs/get-started.
 
+## RobustMQ AMQP
+In the planning
+
+## RobustMQ Kafka
+In the planning
+
+## RobustMQ RocketMQ
+In the planning
+
+## RobustMQ ...
+In the planning
+
 ## Contributing
 
 ### Contribution Guidelines
@@ -197,9 +209,18 @@ Please refer to [contribution guidelines](http://www.robustmq.com/docs/robustmq-
 
 ### Contact us
 - **Slack**: Join [RobustMQ Slack](https://join.slack.com/t/robustmq/shared_invite/zt-2r7sccx50-DIrAlYOETp3xhsX1Qsr79A)
+
 - **Google Group**: Join [RobustMQ Google Group](https://groups.google.com/g/robustmq)
 
-If you want to participate in the project development, you can create an issue and leave your contact information, such as wechat, we will contact you.
+- **Wechat Group**: If you're interested in contributing to this project or discussing development topics, scan the QR Code to join our WeChat group for real-time discussions and collaboration.
+<div align="center"> 
+  <img src="docs/images/WechatGroup.png" alt="WeChat QR Code" width=200 />
+</div>
+
+- **Personal wechat**: Wechat group QR code will be updated regularly. If the QR code expires, the developer's personal wechat can be added.
+<div align="center">
+  <img src="docs/images/wechat.jpg" alt="WeChat QR Code" width=200 />
+</div>
 
 ## License
 RobustMQ uses the Apache 2.0 license to strike a balance between open contributions and allowing you to use the software however you want
