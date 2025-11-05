@@ -1027,6 +1027,7 @@ dependencies = [
  "rocksdb-engine",
  "schema-register",
  "serde_json",
+ "storage-adapter",
  "thiserror 1.0.69",
  "tokio",
  "tonic",
@@ -1397,7 +1398,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3650,6 +3655,7 @@ name = "journal-server"
 version = "0.2.4"
 dependencies = [
  "axum",
+ "bincode",
  "bytes",
  "common-base",
  "common-config",
@@ -4053,10 +4059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "message-expire"
-version = "0.2.4"
-
-[[package]]
 name = "meta-service"
 version = "0.2.4"
 dependencies = [
@@ -4097,6 +4099,7 @@ dependencies = [
 name = "metadata-struct"
 version = "0.2.4"
 dependencies = [
+ "bincode",
  "bytes",
  "clap",
  "common-base",
@@ -4105,6 +4108,7 @@ dependencies = [
  "protocol",
  "pulsar",
  "serde",
+ "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
@@ -4163,6 +4167,10 @@ dependencies = [
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "mmap-file"
+version = "0.2.4"
 
 [[package]]
 name = "mobc"
@@ -6280,14 +6288,23 @@ version = "0.32.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "014cc767fefab6a3e798ca45112bccad9c6e0e218fbd49720042716c73cfef44"
 dependencies = [
+ "arc-swap",
+ "backon",
+ "bytes",
+ "cfg-if",
  "combine",
+ "futures-channel",
+ "futures-util",
  "itoa",
  "num-bigint",
  "percent-encoding",
+ "pin-project-lite",
  "r2d2",
  "ryu",
  "sha1_smol",
  "socket2 0.6.1",
+ "tokio",
+ "tokio-util",
  "url",
 ]
 
@@ -6593,6 +6610,7 @@ dependencies = [
 name = "rocksdb-engine"
 version = "0.2.4"
 dependencies = [
+ "bincode",
  "common-base",
  "common-config",
  "common-metrics",
@@ -7643,8 +7661,10 @@ name = "storage-adapter"
 version = "0.2.4"
 dependencies = [
  "axum",
+ "bincode",
  "bytes",
  "common-base",
+ "common-config",
  "dashmap",
  "futures",
  "grpc-clients",
@@ -7654,6 +7674,7 @@ dependencies = [
  "opendal",
  "protocol",
  "r2d2_mysql",
+ "rocksdb",
  "rocksdb-engine",
  "serde",
  "serde_json",
@@ -7661,6 +7682,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

@@ -93,13 +93,14 @@ impl ElasticsearchBridgePlugin {
             "data": record.data,
         });
 
-        if !record.header.is_empty() {
-            let headers: Vec<Value> = record
-                .header
-                .iter()
-                .map(|h| json!({"name": h.name, "value": h.value}))
-                .collect();
-            doc["headers"] = json!(headers);
+        if let Some(headers) = &record.header {
+            if !headers.is_empty() {
+                let headers_vec: Vec<Value> = headers
+                    .iter()
+                    .map(|h| json!({"name": h.name, "value": h.value}))
+                    .collect();
+                doc["headers"] = json!(headers_vec);
+            }
         }
 
         Ok(doc)
@@ -191,7 +192,6 @@ pub fn start_elasticsearch_connector(
                 return;
             }
         };
-
         let bridge = ElasticsearchBridgePlugin::new(es_config);
 
         let stop_recv = thread.stop_send.subscribe();
@@ -205,6 +205,7 @@ pub fn start_elasticsearch_connector(
             BridgePluginReadConfig {
                 topic_name: connector.topic_name,
                 record_num: 100,
+                strategy: connector.failure_strategy,
             },
             stop_recv,
         )

@@ -97,7 +97,7 @@ pub(crate) async fn persist_delay_message(
     data: Record,
 ) -> Result<u64, CommonError> {
     let offset = message_storage_adapter
-        .write(namespace.to_owned(), shard_name.to_owned(), data.clone())
+        .write(namespace, shard_name, &data)
         .await?;
 
     Ok(offset)
@@ -111,7 +111,7 @@ pub(crate) async fn init_delay_message_shard(
     for i in 0..shard_num {
         let shard_name = get_delay_message_shard_name(i);
         let results = message_storage_adapter
-            .list_shard(namespace.to_owned(), shard_name.clone())
+            .list_shard(namespace, &shard_name)
             .await?;
 
         if results.is_empty() {
@@ -120,7 +120,7 @@ pub(crate) async fn init_delay_message_shard(
                 shard_name: shard_name.clone(),
                 replica_num: 1,
             };
-            message_storage_adapter.create_shard(shard).await?;
+            message_storage_adapter.create_shard(&shard).await?;
             info!("init shard:{}, {}", namespace, shard_name);
         }
     }
@@ -171,7 +171,7 @@ mod test {
 
         let shard_name = get_delay_message_shard_name(shard_num - 1);
         let res = message_storage_adapter
-            .list_shard(namespace, shard_name.clone())
+            .list_shard(&namespace, &shard_name)
             .await;
         assert!(res.is_ok());
         let res = res.unwrap();
@@ -184,7 +184,7 @@ mod test {
         let message_storage_adapter = build_memory_storage_driver();
         let namespace = unique_id();
         let shard_name = "test".to_string();
-        let data = Record::build_str("test".to_string());
+        let data = Record::from_string("test".to_string());
         let res =
             persist_delay_message(&message_storage_adapter, &namespace, &shard_name, data).await;
         assert!(res.is_ok());
@@ -194,7 +194,7 @@ mod test {
         assert!(res.is_ok());
         let res = res.unwrap().unwrap();
         assert_eq!(res.offset.unwrap(), offset);
-        let d1: String = serde_json::from_slice(&res.data).unwrap();
+        let d1 = String::from_utf8(res.data.to_vec()).unwrap();
         assert_eq!(d1, "test".to_string());
     }
 }

@@ -20,6 +20,7 @@ license.workspace = true
 
 
 [dependencies]
+tracing.workspace = true
 bytes.workspace = true
 axum.workspace = true
 thiserror.workspace = true
@@ -31,11 +32,14 @@ tokio-util.workspace = true
 dashmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+bincode.workspace = true
 third-driver.workspace = true
 mysql.workspace = true
 metadata-struct.workspace = true
+rocksdb.workspace = true
 rocksdb-engine.workspace = true
 journal-client.workspace = true
 futures.workspace = true
 opendal.workspace = true
 r2d2_mysql.workspace = true
+common-config.workspace = true

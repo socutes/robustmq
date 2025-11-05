@@ -47,11 +47,9 @@ impl<'a> Producer<'a> {
                 builder.with_auth(authentication)
             }
             (None, Some(oauth2_cfg), None, None) => {
-                builder.with_auth_provider(OAuth2Authentication::client_credentials(
-                    serde_json::from_str(oauth2_cfg.as_str()).unwrap_or_else(|_| {
-                        panic!("invalid oauth2 config [{}]", oauth2_cfg.as_str())
-                    }),
-                ))
+                let oauth2_params = serde_json::from_str(oauth2_cfg.as_str())
+                    .map_err(|e| PulsarError::Custom(format!("Invalid oauth2 config: {}", e)))?;
+                builder.with_auth_provider(OAuth2Authentication::client_credentials(oauth2_params))
             }
             (None, None, Some(username), Some(password)) => {
                 builder.with_auth_provider(BasicAuthentication::new(username, password))
@@ -85,11 +83,12 @@ mod tests {
             oauth: None,
             basic_name: None,
             basic_password: None,
+            ..Default::default()
         };
         let producer = Producer::new(&config);
         let p = producer.build_producer().await;
         if let Ok(mut p) = p {
-            let mut record = Record::build_str("test".to_string());
+            let mut record = Record::from_string("test".to_string());
             record.set_key("test".to_string());
             record.set_header(vec![Header {
                 name: "h1".to_string(),

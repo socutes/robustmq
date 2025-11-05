@@ -48,7 +48,6 @@ use mqtt_broker::{
     broker::{MqttBrokerServer, MqttBrokerServerParams},
     handler::cache::MQTTCacheManager as MqttCacheManager,
     security::AuthDriver,
-    storage::message::build_message_storage_driver,
     subscribe::manager::SubscribeManager,
 };
 use network_server::common::connection_manager::ConnectionManager as NetworkConnectionManager;
@@ -56,7 +55,7 @@ use openraft::Raft;
 use pprof_monitor::pprof_monitor::start_pprof_monitor;
 use rate_limit::RateLimiterManager;
 use rocksdb_engine::{
-    metrics_cache::mqtt::MQTTMetricsCache,
+    metrics::mqtt::MQTTMetricsCache,
     rocksdb::RocksDBEngine,
     storage::family::{column_family_list, storage_data_fold},
 };
@@ -68,6 +67,11 @@ use std::{
     },
     thread::sleep,
     time::Duration,
+};
+use storage_adapter::{
+    driver::build_message_storage_driver,
+    expire::{message_expire_thread, MessageExpireConfig},
+    storage::ArcStorageAdapter,
 };
 use tokio::{runtime::Runtime, signal, sync::broadcast};
 use tracing::{error, info};
@@ -120,12 +124,31 @@ impl BrokerServer {
             )
             .await
         });
+
+        let raw_client_pool = client_pool.clone();
+        let message_storage_adapter = main_runtime.block_on(async move {
+            let storage = match build_message_storage_driver(
+                raw_client_pool.clone(),
+                config.message_storage.clone(),
+            )
+            .await
+            {
+                Ok(storage) => storage,
+                Err(e) => {
+                    panic!("{}", e.to_string());
+                }
+            };
+            storage
+        });
+
         let mqtt_params = BrokerServer::build_mqtt_server(
             client_pool.clone(),
             broker_cache.clone(),
             rocksdb_engine_handler.clone(),
             connection_manager.clone(),
+            message_storage_adapter,
         );
+
         let journal_params = BrokerServer::build_journal_server(client_pool.clone());
 
         BrokerServer {
@@ -268,6 +291,12 @@ impl BrokerServer {
         server_runtime
             .spawn(async move { network_connection_gc(connection_manager, raw_stop_send).await });
 
+        // message expire
+        let storage = self.mqtt_params.message_storage_adapter.clone();
+        server_runtime.spawn(async move {
+            message_expire_thread(storage.clone(), MessageExpireConfig::default()).await;
+        });
+
         // awaiting stop
         self.awaiting_stop(place_stop_send, mqtt_stop_send, journal_stop_send);
     }
@@ -306,28 +335,20 @@ impl BrokerServer {
         broker_cache: Arc<BrokerCacheManager>,
         rocksdb_engine_handler: Arc<RocksDBEngine>,
         connection_manager: Arc<NetworkConnectionManager>,
+        message_storage_adapter: ArcStorageAdapter,
     ) -> MqttBrokerServerParams {
         let config = broker_config();
         let cache_manager = Arc::new(MqttCacheManager::new(
             client_pool.clone(),
             broker_cache.clone(),
         ));
-
-        let storage_driver = match build_message_storage_driver() {
-            Ok(storage) => storage,
-            Err(e) => {
-                panic!("{}", e.to_string());
-            }
-        };
-        let arc_storage_driver = Arc::new(storage_driver);
         let subscribe_manager = Arc::new(SubscribeManager::new());
         let connector_manager = Arc::new(ConnectorManager::new());
-
         let auth_driver = Arc::new(AuthDriver::new(cache_manager.clone(), client_pool.clone()));
         let delay_message_manager = Arc::new(DelayMessageManager::new(
             config.cluster_name.clone(),
             1,
-            arc_storage_driver.clone(),
+            message_storage_adapter.clone(),
         ));
         let metrics_cache_manager = Arc::new(MQTTMetricsCache::new(rocksdb_engine_handler.clone()));
         let schema_manager = Arc::new(SchemaRegisterManager::new());
@@ -335,7 +356,7 @@ impl BrokerServer {
         MqttBrokerServerParams {
             cache_manager,
             client_pool,
-            message_storage_adapter: arc_storage_driver,
+            message_storage_adapter,
             subscribe_manager,
             connection_manager,
             connector_manager,

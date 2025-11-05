@@ -13,10 +13,9 @@
 # limitations under the License.
 
 [package]
-name = "message-expire"
+name = "mmap-file"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-
 
 [dependencies]

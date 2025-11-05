@@ -198,7 +198,7 @@ impl ConnectorSink for FileBridgePlugin {
         writer: &mut FileWriter,
     ) -> ResultMqttBrokerError {
         for record in records {
-            let msg = serde_json::from_slice::<MqttMessage>(&record.data)?;
+            let msg = MqttMessage::decode(record.data.to_vec())?;
             let data = serde_json::to_string(&msg)?;
             writer.write(data.as_ref()).await?;
             writer.write(b"\n").await?;
@@ -243,6 +243,7 @@ pub fn start_local_file_connector(
             BridgePluginReadConfig {
                 topic_name: connector.topic_name,
                 record_num: 100,
+                strategy: connector.failure_strategy,
             },
             stop_recv,
         )
@@ -266,7 +267,9 @@ mod tests {
     use common_config::{broker::init_broker_conf_by_config, config::BrokerConfig};
     use metadata_struct::{
         adapter::record::{Header, Record},
-        mqtt::bridge::config_local_file::LocalFileConnectorConfig,
+        mqtt::bridge::{
+            config_local_file::LocalFileConnectorConfig, connector::FailureHandlingStrategy,
+        },
     };
     use std::{fs, path::PathBuf, sync::Arc, time::Duration};
     use storage_adapter::storage::{build_memory_storage_driver, ShardInfo};
@@ -298,7 +301,7 @@ mod tests {
 
         // prepare some data for testing
         storage_adapter
-            .create_shard(ShardInfo {
+            .create_shard(&ShardInfo {
                 namespace: namespace.clone(),
                 shard_name: shard_name.clone(),
                 ..Default::default()
@@ -311,13 +314,13 @@ mod tests {
         for i in 0..1000 {
             let record = Record {
                 offset: Some(i),
-                header: vec![Header {
+                header: Some(vec![Header {
                     name: "test_name".to_string(),
                     value: "test_value".to_string(),
-                }],
-                key: format!("test_key_{i}"),
-                data: format!("test_data_{i}").as_bytes().to_vec(),
-                tags: vec![],
+                }]),
+                key: Some(format!("test_key_{i}")),
+                data: format!("test_data_{i}").as_bytes().to_vec().into(),
+                tags: Some(vec![]),
                 timestamp: now_second(),
                 crc_num: calc_crc32(format!("test_data_{i}").as_bytes()),
             };
@@ -326,7 +329,7 @@ mod tests {
         }
 
         storage_adapter
-            .batch_write(namespace.clone(), shard_name.clone(), test_data.clone())
+            .batch_write(&namespace, &shard_name, &test_data)
             .await
             .unwrap();
 
@@ -358,6 +361,7 @@ mod tests {
         let read_config = BridgePluginReadConfig {
             topic_name: shard_name.clone(),
             record_num: 100,
+            strategy: FailureHandlingStrategy::Discard,
         };
 
         let record_config_clone = read_config.clone();

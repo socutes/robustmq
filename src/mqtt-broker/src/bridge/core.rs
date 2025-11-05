@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{common::types::ResultMqttBrokerError, storage::connector::ConnectorStorage};
+use crate::{
+    bridge::failure::failure_message_process, common::types::ResultMqttBrokerError,
+    storage::connector::ConnectorStorage,
+};
 use axum::async_trait;
 
 use common_base::{
@@ -23,7 +26,11 @@ use common_config::broker::broker_config;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::{
     adapter::record::Record,
-    mqtt::bridge::{connector::MQTTConnector, connector_type::ConnectorType, status::MQTTStatus},
+    mqtt::bridge::{
+        connector::{FailureHandlingStrategy, MQTTConnector},
+        connector_type::ConnectorType,
+        status::MQTTStatus,
+    },
 };
 use std::{sync::Arc, time::Duration};
 use storage_adapter::storage::ArcStorageAdapter;
@@ -41,6 +48,7 @@ use super::{
     postgres::start_postgres_connector,
     pulsar::start_pulsar_connector,
     rabbitmq::start_rabbitmq_connector,
+    redis::start_redis_connector,
 };
 
 use crate::storage::message::MessageStorage;
@@ -49,6 +57,7 @@ use crate::storage::message::MessageStorage;
 pub struct BridgePluginReadConfig {
     pub topic_name: String,
     pub record_num: u64,
+    pub strategy: FailureHandlingStrategy,
 }
 
 #[derive(Clone)]
@@ -95,6 +104,7 @@ pub async fn run_connector_loop<S: ConnectorSink>(
     mut stop_recv: broadcast::Receiver<bool>,
 ) -> ResultMqttBrokerError {
     sink.validate().await?;
+
     let mut resource = sink.init_sink().await?;
     let message_storage = MessageStorage::new(message_storage);
     let group_name = connector_name.clone();
@@ -124,35 +134,43 @@ pub async fn run_connector_loop<S: ConnectorSink>(
 
                         let start_time = now_mills();
                         let message_count = data.len() as u64;
+                        let mut retry_times = 0;
+                        loop{
+                            match sink.send_batch(&data, &mut resource).await {
+                                Ok(_) => {
+                                    message_storage.commit_group_offset(
+                                        &group_name,
+                                        &config.topic_name,
+                                        offset + message_count
+                                    ).await?;
 
-                        match sink.send_batch(&data, &mut resource).await {
-                            Ok(_) => {
-                                message_storage.commit_group_offset(
-                                    &group_name,
-                                    &config.topic_name,
-                                    offset + message_count
-                                ).await?;
-
-                                update_last_active(
-                                    connector_manager,
-                                    &connector_name,
-                                    start_time,
-                                    message_count,
-                                    true
-                                );
-                            },
-                            Err(e) => {
-                                update_last_active(
-                                    connector_manager,
-                                    &connector_name,
-                                    start_time,
-                                    message_count,
-                                    false
-                                );
-                                error!("Connector {} failed to send batch: {}", connector_name, e);
-                                sleep(Duration::from_millis(100)).await;
+                                    update_last_active(
+                                        connector_manager,
+                                        &connector_name,
+                                        start_time,
+                                        message_count,
+                                        true
+                                    );
+                                    break;
+                                },
+                                Err(e) => {
+                                    update_last_active(
+                                        connector_manager,
+                                        &connector_name,
+                                        start_time,
+                                        message_count,
+                                        false
+                                    );
+                                    error!("Connector {} failed to send batch: {}", connector_name, e);
+                                    if failure_message_process(config.strategy.clone(),retry_times).await{
+                                        sleep(Duration::from_millis(100)).await;
+                                        break
+                                    }
+                                    retry_times +=1;
+                                }
                             }
                         }
+
                     },
                     Err(e) => {
                         update_last_active(connector_manager, &connector_name, now_mills(), 0, false);
@@ -388,6 +406,9 @@ fn start_thread(
         ConnectorType::Elasticsearch => {
             start_elasticsearch_connector(connector_manager, message_storage, connector, thread);
         }
+        ConnectorType::Redis => {
+            start_redis_connector(connector_manager, message_storage, connector, thread);
+        }
     }
 }
 
@@ -406,6 +427,7 @@ mod tests {
     use crate::bridge::manager::ConnectorManager;
     use common_base::tools::{now_second, unique_id};
     use common_config::{broker::init_broker_conf_by_config, config::BrokerConfig};
+    use metadata_struct::mqtt::bridge::connector::FailureHandlingStrategy;
     use storage_adapter::storage::{build_memory_storage_driver, ArcStorageAdapter, ShardInfo};
 
     fn setup() -> (ArcStorageAdapter, Arc<ConnectorManager>) {
@@ -428,6 +450,7 @@ mod tests {
             connector_type: ConnectorType::LocalFile,
             topic_name: "test_topic".to_string(),
             config: "{}".to_string(),
+            failure_strategy: FailureHandlingStrategy::Discard,
             status: MQTTStatus::Running,
             broker_id: Some(1),
             cluster_name: "test_cluster".to_string(),
@@ -441,6 +464,7 @@ mod tests {
         let config = BridgePluginReadConfig {
             topic_name: "test_topic".to_string(),
             record_num: 100,
+            strategy: FailureHandlingStrategy::Discard,
         };
 
         assert_eq!(config.topic_name, "test_topic");
@@ -490,7 +514,7 @@ mod tests {
 
         let shard_name = connector.topic_name.clone();
         storage_adapter
-            .create_shard(ShardInfo {
+            .create_shard(&ShardInfo {
                 namespace: "default".to_string(),
                 shard_name,
                 ..Default::default()

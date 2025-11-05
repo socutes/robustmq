@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
-use common_base::error::common::CommonError;
+use common_base::{error::common::CommonError, utils::serialize};
 use rocksdb_engine::rocksdb::RocksDBEngine;
-use rocksdb_engine::storage::engine::{rocksdb_engine_get, rocksdb_engine_save};
+use rocksdb_engine::storage::journal::{engine_get_by_journal, engine_save_by_journal};
 use rocksdb_engine::warp::StorageDataWrap;
 
 use super::keys::{
@@ -45,10 +45,10 @@ impl TimestampIndexManager {
         start_timestamp: u64,
     ) -> Result<(), JournalServerError> {
         let key = timestamp_segment_start(segment_iden);
-        Ok(rocksdb_engine_save(
+        Ok(engine_save_by_journal(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
-            key,
+            &key,
             start_timestamp,
         )?)
     }
@@ -58,10 +58,10 @@ impl TimestampIndexManager {
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, JournalServerError> {
         let key = timestamp_segment_start(segment_iden);
-        if let Some(res) = rocksdb_engine_get(
+        if let Some(res) = engine_get_by_journal(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
-            key,
+            &key,
         )? {
             return Ok(serde_json::from_str::<i64>(&res.data)?);
         }
@@ -75,10 +75,10 @@ impl TimestampIndexManager {
         end_timestamp: u64,
     ) -> Result<(), JournalServerError> {
         let key = timestamp_segment_end(segment_iden);
-        Ok(rocksdb_engine_save(
+        Ok(engine_save_by_journal(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
-            key,
+            &key,
             end_timestamp,
         )?)
     }
@@ -88,10 +88,10 @@ impl TimestampIndexManager {
         segment_iden: &SegmentIdentity,
     ) -> Result<i64, JournalServerError> {
         let key = timestamp_segment_end(segment_iden);
-        if let Some(res) = rocksdb_engine_get(
+        if let Some(res) = engine_get_by_journal(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
-            key,
+            &key,
         )? {
             return Ok(serde_json::from_str::<i64>(&res.data)?);
         }
@@ -106,10 +106,10 @@ impl TimestampIndexManager {
         index_data: IndexData,
     ) -> Result<(), JournalServerError> {
         let key = timestamp_segment_time(segment_iden, timestamp);
-        Ok(rocksdb_engine_save(
+        Ok(engine_save_by_journal(
             self.rocksdb_engine_handler.clone(),
             DB_COLUMN_FAMILY_INDEX,
-            key,
+            &key,
             index_data,
         )?)
     }
@@ -144,8 +144,8 @@ impl TimestampIndexManager {
                         break;
                     }
 
-                    let data = serde_json::from_slice::<StorageDataWrap>(val)?;
-                    let index_data = serde_json::from_slice::<IndexData>(data.data.as_ref())?;
+                    let data = serialize::deserialize::<StorageDataWrap>(val)?;
+                    let index_data = serde_json::from_str::<IndexData>(&data.data)?;
 
                     if index_data.timestamp < start_timestamp {
                         iter.next();

@@ -20,11 +20,18 @@ use common_base::{
 };
 use metadata_struct::mqtt::bridge::{
     config_elasticsearch::ElasticsearchConnectorConfig,
-    config_greptimedb::GreptimeDBConnectorConfig, config_kafka::KafkaConnectorConfig,
-    config_local_file::LocalFileConnectorConfig, config_mongodb::MongoDBConnectorConfig,
-    config_mysql::MySQLConnectorConfig, config_postgres::PostgresConnectorConfig,
-    config_pulsar::PulsarConnectorConfig, config_rabbitmq::RabbitMQConnectorConfig,
-    connector::MQTTConnector, connector_type::ConnectorType, status::MQTTStatus,
+    config_greptimedb::GreptimeDBConnectorConfig,
+    config_kafka::KafkaConnectorConfig,
+    config_local_file::LocalFileConnectorConfig,
+    config_mongodb::MongoDBConnectorConfig,
+    config_mysql::MySQLConnectorConfig,
+    config_postgres::PostgresConnectorConfig,
+    config_pulsar::PulsarConnectorConfig,
+    config_rabbitmq::RabbitMQConnectorConfig,
+    config_redis::RedisConnectorConfig,
+    connector::{FailureHandlingStrategy, MQTTConnector},
+    connector_type::ConnectorType,
+    status::MQTTStatus,
 };
 use mqtt_broker::storage::connector::ConnectorStorage;
 use std::{str::FromStr, sync::Arc};
@@ -41,8 +48,9 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ConnectorListReq {
+    pub connector_name: Option<String>,
     pub limit: Option<u32>,
     pub page: Option<u32>,
     pub sort_field: Option<String>,
@@ -85,6 +93,8 @@ pub struct CreateConnectorReq {
     #[validate(length(min = 1, max = 4096, message = "Config length must be between 1-4096"))]
     pub config: String,
 
+    pub failure_strategy: FailureStrategy,
+
     #[validate(length(
         min = 1,
         max = 256,
@@ -93,13 +103,26 @@ pub struct CreateConnectorReq {
     pub topic_name: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Validate, Default)]
+pub struct FailureStrategy {
+    #[validate(length(
+        min = 1,
+        max = 128,
+        message = "Failure strategy length must be between 1-128"
+    ))]
+    pub strategy: String,
+    pub retry_total_times: Option<u32>,
+    pub wait_time_ms: Option<u64>,
+    pub topic_name: Option<String>,
+}
+
 fn validate_connector_type(connector_type: &str) -> Result<(), validator::ValidationError> {
     match connector_type {
         "kafka" | "pulsar" | "rabbitmq" | "greptime" | "postgres" | "mysql" | "mongodb"
-        | "file" | "elasticsearch" => Ok(()),
+        | "file" | "elasticsearch" | "redis" => Ok(()),
         _ => {
             let mut err = validator::ValidationError::new("invalid_connector_type");
-            err.message = Some(std::borrow::Cow::from("Connector type must be kafka, pulsar, rabbitmq, greptime, postgres, mysql, mongodb, elasticsearch or file"));
+            err.message = Some(std::borrow::Cow::from("Connector type must be kafka, pulsar, rabbitmq, greptime, postgres, mysql, mongodb, elasticsearch, redis or file"));
             Err(err)
         }
     }
@@ -141,9 +164,23 @@ pub async fn connector_list(
         params.exact_match,
     );
 
-    let mut connectors = Vec::new();
-    for connector in state.mqtt_context.connector_manager.get_all_connector() {
-        connectors.push(ConnectorListRow {
+    let mut results = Vec::new();
+    let connectors = if let Some(connector_name) = params.connector_name {
+        if let Some(connector) = state
+            .mqtt_context
+            .connector_manager
+            .get_connector(&connector_name)
+        {
+            vec![connector]
+        } else {
+            Vec::new()
+        }
+    } else {
+        state.mqtt_context.connector_manager.get_all_connector()
+    };
+
+    for connector in connectors {
+        results.push(ConnectorListRow {
             connector_name: connector.connector_name.clone(),
             connector_type: connector.connector_type.to_string(),
             config: connector.config.clone(),
@@ -158,8 +195,7 @@ pub async fn connector_list(
             update_time: timestamp_to_local_datetime(connector.update_time as i64),
         });
     }
-
-    let filtered = apply_filters(connectors, &options);
+    let filtered = apply_filters(results, &options);
     let sorted = apply_sorting(filtered, &options);
     let pagination = apply_pagination(sorted, &options);
 
@@ -220,6 +256,7 @@ async fn connector_create_inner(
         connector_name: params.connector_name.clone(),
         connector_type,
         config: params.config.clone(),
+        failure_strategy: parse_failure_strategy(params.failure_strategy),
         topic_name: params.topic_name.clone(),
         status: MQTTStatus::Idle,
         broker_id: None,
@@ -268,8 +305,40 @@ fn connector_config_validator(connector_type: &ConnectorType, config: &str) -> R
             let es_config: ElasticsearchConnectorConfig = serde_json::from_str(config)?;
             es_config.validate()?;
         }
+        ConnectorType::Redis => {
+            let redis_config: RedisConnectorConfig = serde_json::from_str(config)?;
+            redis_config.validate()?;
+        }
     }
     Ok(())
+}
+
+fn parse_failure_strategy(strategy: FailureStrategy) -> FailureHandlingStrategy {
+    use metadata_struct::mqtt::bridge::connector::{
+        DeadMessageQueueStrategy, DiscardAfterRetryStrategy,
+    };
+
+    match strategy.strategy.to_lowercase().as_str() {
+        "discard" => FailureHandlingStrategy::Discard,
+        "discard_after_retry" => {
+            let retry_total_times = strategy.retry_total_times.unwrap_or(3);
+            let wait_time_ms = strategy.wait_time_ms.unwrap_or(1000);
+            FailureHandlingStrategy::DiscardAfterRetry(DiscardAfterRetryStrategy {
+                retry_total_times,
+                wait_time_ms,
+            })
+        }
+        "dead_message_queue" => {
+            let topic_name = strategy
+                .topic_name
+                .unwrap_or_else(|| "dead_letter_queue".to_string());
+            FailureHandlingStrategy::DeadMessageQueue(DeadMessageQueueStrategy { topic_name })
+        }
+        _ => {
+            // Default to Discard if strategy is not recognized
+            FailureHandlingStrategy::Discard
+        }
+    }
 }
 
 pub async fn connector_detail(
