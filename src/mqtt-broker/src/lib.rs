@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #![allow(clippy::result_large_err)]
-pub mod bridge;
 pub mod broker;
 pub mod core;
 pub mod mqtt;
