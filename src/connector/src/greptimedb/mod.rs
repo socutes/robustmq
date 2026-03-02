@@ -26,8 +26,10 @@ use tokio::sync::mpsc::Receiver;
 use tracing::error;
 
 use crate::{
-    core::{run_connector_loop, BridgePluginReadConfig, BridgePluginThread, ConnectorSink},
+    core::{BridgePluginReadConfig, BridgePluginThread},
+    loops::run_connector_loop,
     manager::ConnectorManager,
+    traits::ConnectorSink,
 };
 use common_base::error::common::CommonError;
 

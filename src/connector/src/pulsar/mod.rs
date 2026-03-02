@@ -15,8 +15,10 @@
 use std::sync::Arc;
 
 use crate::{
-    core::{run_connector_loop, BridgePluginReadConfig, BridgePluginThread, ConnectorSink},
+    core::{BridgePluginReadConfig, BridgePluginThread},
+    loops::run_connector_loop,
     manager::ConnectorManager,
+    traits::ConnectorSink,
 };
 use async_trait::async_trait;
 use common_base::error::common::CommonError;

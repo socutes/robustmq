@@ -28,8 +28,10 @@ use tracing::{error, warn};
 use common_base::error::common::CommonError;
 
 use super::{
-    core::{run_connector_loop, BridgePluginReadConfig, BridgePluginThread, ConnectorSink},
+    core::{BridgePluginReadConfig, BridgePluginThread},
+    loops::run_connector_loop,
     manager::ConnectorManager,
+    traits::ConnectorSink,
 };
 
 pub struct PostgresBridgePlugin {

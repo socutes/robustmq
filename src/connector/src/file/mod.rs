@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::core::{run_connector_loop, BridgePluginReadConfig, BridgePluginThread, ConnectorSink};
+use super::core::{BridgePluginReadConfig, BridgePluginThread};
+use super::loops::run_connector_loop;
 use super::manager::ConnectorManager;
+use super::traits::ConnectorSink;
 use async_trait::async_trait;
 use chrono::{DateTime, Local, Timelike};
 use common_base::error::common::CommonError;
@@ -276,8 +278,7 @@ mod tests {
     use tokio::{fs::File, io::AsyncReadExt, time::sleep};
 
     use crate::{
-        core::{run_connector_loop, BridgePluginReadConfig},
-        file::FileBridgePlugin,
+        core::BridgePluginReadConfig, file::FileBridgePlugin, loops::run_connector_loop,
         manager::ConnectorManager,
     };
     use tempfile::tempdir;
