@@ -421,7 +421,7 @@ impl BrokerServer {
         let connector_manager = self.mqtt_params.connector_manager.clone();
         let raw_stop_send = stop_send.clone();
         let client_poll = self.client_pool.clone();
-        tokio::spawn(Box::pin(async move {
+        self.server_runtime.spawn(Box::pin(async move {
             start_connector(
                 &client_poll,
                 &message_storage,
