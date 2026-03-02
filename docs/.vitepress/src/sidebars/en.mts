@@ -205,6 +205,7 @@ export const sidebar = [
         link: "/en/ContributionGuide/GitHub-Contribution-Guide",
       },
       { text: "PR Example", link: "/en/ContributionGuide/Pull-Request-Example" },
+      { text: "AI Skills Guide", link: "/en/ContributionGuide/AI-Skills" },
       {
         text: "ContributingCode",
         collapsed: true,

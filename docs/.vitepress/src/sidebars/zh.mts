@@ -220,6 +220,10 @@ export const sidebar = [
         link: "/zh/ContributionGuide/Pull-Request-Example",
       },
       {
+        text: "AI Skills 使用指南",
+        link: "/zh/ContributionGuide/AI-Skills",
+      },
+      {
         text: "代码贡献",
         collapsed: true,
         items: [
