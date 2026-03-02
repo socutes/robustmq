@@ -62,27 +62,18 @@ pub(crate) async fn start_connector_thread(
     stop_send: broadcast::Sender<bool>,
 ) {
     let ac_fn = async || -> ResultCommonError {
-        check_connector(&storage_driver_manager, &connector_manager, &client_pool).await;
+        let current_broker_id = broker_config().broker_id;
+        start_connectors(
+            &storage_driver_manager,
+            &connector_manager,
+            &client_pool,
+            current_broker_id,
+        );
+        gc_connectors(&connector_manager, &client_pool, current_broker_id).await;
         Ok(())
     };
 
     loop_select_ticket(ac_fn, 1000, &stop_send).await;
-    info!("Connector thread exited successfully");
-}
-
-async fn check_connector(
-    storage_driver_manager: &Arc<StorageDriverManager>,
-    connector_manager: &Arc<ConnectorManager>,
-    client_pool: &Arc<ClientPool>,
-) {
-    let current_broker_id = broker_config().broker_id;
-    start_connectors(
-        storage_driver_manager,
-        connector_manager,
-        client_pool,
-        current_broker_id,
-    );
-    gc_connectors(connector_manager, client_pool, current_broker_id).await;
 }
 
 fn start_connectors(

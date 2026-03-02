@@ -59,6 +59,7 @@ export const sidebar = [
             { text: "Meta Service", link: "/en/Architect/MetaService-Architecture" },
             { text: "Storage Adapter", link: "/en/Architect/StorageAdapter-Architecture" },
             { text: "Storage Engine", link: "/en/Architect/StorageEngine-Architecture" },
+            { text: "Connector", link: "/en/Architect/Connector-Architecture" },
         ],
     },
     {

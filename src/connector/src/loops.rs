@@ -14,12 +14,16 @@
 
 use crate::core::BridgePluginReadConfig;
 use crate::failure::failure_message_process;
-use crate::manager::{update_last_active, ConnectorManager};
+use crate::manager::ConnectorManager;
 use crate::storage::connector::ConnectorStorage;
 use crate::storage::message::MessageStorage;
 use crate::traits::ConnectorSink;
 use common_base::error::common::CommonError;
 use common_base::tools::{now_millis, now_second};
+use common_metrics::mqtt::connector::{
+    record_connector_messages_sent_failure, record_connector_messages_sent_success,
+    record_connector_send_duration,
+};
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::bridge::status::MQTTStatus;
 use metadata_struct::storage::{
@@ -169,4 +173,26 @@ fn extract_max_offsets_and_convert(
     }
 
     (data_list, max_offsets)
+}
+
+pub fn update_last_active(
+    connector_manager: &Arc<ConnectorManager>,
+    connector_name: &str,
+    start_time: u128,
+    message_count: u64,
+    success: bool,
+) {
+    if let Some(mut thread) = connector_manager.connector_thread.get_mut(connector_name) {
+        thread.last_send_time = now_second();
+
+        if success {
+            thread.send_success_total += message_count;
+            let duration_ms = (now_millis() - start_time) as f64;
+            record_connector_messages_sent_success(connector_name.to_owned(), message_count);
+            record_connector_send_duration(connector_name.to_owned(), duration_ms);
+        } else {
+            thread.send_fail_total += message_count;
+            record_connector_messages_sent_failure(connector_name.to_owned(), message_count);
+        }
+    }
 }
